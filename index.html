@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <title>Tiny RAG Visualizer — Client-side Embeddings (HF JSON + ESM)</title>
+  <title>Tiny RAG Visualizer — Client-side Embeddings (HF JSON + Instant UI)</title>
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <style>
     :root { --bg:#0b0d10; --panel:#12161b; --muted:#8a96a3; --fg:#e8eef5; --acc:#69b6ff; --ok:#5bd68a; --warn:#ffb15a; --err:#ff6b6b; }
@@ -14,9 +14,8 @@
     .col.sm{flex:0 0 380px}
     label{display:block;margin:10px 0 6px;color:var(--muted)}
     input[type="range"]{width:100%}
-    input[type="number"],textarea,select,input[type="text"]{width:100%;background:#0f141b;border:1px solid #222b39;color:var(--fg);border-radius:8px;padding:8px}
+    input[type="number"],textarea,select{width:100%;background:#0f141b;border:1px solid #222b39;color:var(--fg);border-radius:8px;padding:8px}
     .btn{background:#1b2532;border:1px solid #2a374a;color:var(--fg);padding:8px 10px;border-radius:8px;cursor:pointer}
-    .btn:active{transform:translateY(1px)}
     .muted{color:var(--muted)}
     .bar{height:8px;background:#233044;border-radius:999px;overflow:hidden}
     .bar>i{display:block;height:100%;background:var(--acc)}
@@ -36,6 +35,7 @@
     .mono{font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, monospace}
     .footer{margin-top:8px;color:var(--muted)}
     progress{width:100%}
+    .hidden{display:none}
   </style>
 </head>
 <body>
@@ -44,14 +44,15 @@
 
   <div class="row">
     <div class="col sm">
-      <label>dataset.json (Hugging Face)</label>
-      <input id="dsUrl" type="text" value="https://huggingface.co/datasets/3rd-Degree-Burn/RAG/resolve/main/dataset.json" />
-      <label>queries.json (Hugging Face)</label>
-      <input id="qUrl" type="text" value="https://huggingface.co/datasets/3rd-Degree-Burn/RAG/resolve/main/queries.json" />
-
-      <div style="margin-top:8px;display:flex;gap:8px;align-items:center">
+      <!-- Links + load button are hidden and run automatically -->
+      <div class="hidden">
+        <input id="dsUrl" />
+        <input id="qUrl" />
         <button class="btn" id="init">Load & Embed</button>
-        <span id="status" class="muted small">idle</span>
+      </div>
+
+      <div style="display:flex;gap:8px;align-items:center">
+        <span id="status" class="muted small">initializing…</span>
       </div>
       <div style="margin-top:6px">
         <progress id="prog" value="0" max="1" style="display:none"></progress>
@@ -86,7 +87,7 @@
       </div>
 
       <div class="footer small">
-        Loads JSON from Hugging Face (public), embeds with <code class="inline">Transformers.js</code>.
+        Loads JSON from Hugging Face (public), embeds with <code class="inline">Transformers.js</code>. Changes apply instantly.
       </div>
     </div>
 
@@ -121,41 +122,50 @@
         <span class="badge">t_embed_query: <span id="t2">—</span> ms</span>
         <span class="badge">t_retrieve: <span id="t3">—</span> ms</span>
       </div>
-
-      <div style="margin-top:12px;display:flex;gap:8px;align-items:center">
-        <button class="btn" id="run" disabled>Run</button>
-      </div>
     </div>
   </div>
 </div>
 
-<!-- All logic runs as an ES module to avoid relying on window.transformers -->
+<!-- All logic runs as an ES module -->
 <script type="module">
 import { pipeline, env } from 'https://cdn.jsdelivr.net/npm/@xenova/transformers@2.17.2';
-
-// (Optional) tighten env if you want to avoid remote model caching in IndexedDB across origins
 env.allowLocalModels = false;
 
-const $ = s => document.querySelector(s);
-const syncPair=(range,num)=>{range.addEventListener('input',()=>num.value=range.value);num.addEventListener('input',()=>range.value=num.value);};
-syncPair($('#topk'), $('#topkNum'));
-function setPipe(id, meta, cls='good'){ const el=$(id); el.classList.remove('good','warn','err'); el.classList.add(cls); $(id+'meta').textContent=meta; }
+//
+// ---- CONFIG: your Hugging Face raw JSON files ----
+//
+const DATASET_URL = "https://huggingface.co/datasets/3rd-Degree-Burn/RAG/resolve/main/dataset.json";
+const QUERIES_URL = "https://huggingface.co/datasets/3rd-Degree-Burn/RAG/resolve/main/queries.json";
 
-/* ---------- state ---------- */
+//
+// ---- tiny helpers / UI ----
+//
+const $ = s => document.querySelector(s);
+function setPipe(id, meta, cls='good'){ const el=$(id); el.classList.remove('good','warn','err'); el.classList.add(cls); $(id+'meta').textContent=meta; }
+function syncPair(range,num){
+  const apply = ()=>{ range.value = num.value = Math.max(+range.min, Math.min(+range.max, +range.value||+range.min)); };
+  range.addEventListener('input', ()=>{ num.value = range.value; onParamsChanged(); });
+  num.addEventListener('input', ()=>{ range.value = num.value; apply(); onParamsChanged(); });
+}
+syncPair($('#topk'), $('#topkNum'));
+
+//
+// ---- state ----
 let DOCS = [];         // [{id,title,text}]
 let QUERIES = [];      // [string]
 let DOC_EMB = null;    // Float32Array length=N*D
 let D = 0;             // embedding dim
 let extractor = null;  // Transformers.js pipeline instance
+let READY = false;     // ready for interactive updates
+let EMBEDDING_IN_FLIGHT = false;
 
-/* ---------- fetch from HF (with CORS-friendly fallback) ---------- */
+//
+// ---- fetch (with CORS-friendly fallback) ----
 async function fetchText(url) {
-  // try direct
   try {
     const r = await fetch(url, { method:'GET' });
     if (r.ok) return await r.text();
   } catch (_) {}
-  // fallback via r.jina.ai mirror if needed
   const proxied = 'https://r.jina.ai/' + (url.startsWith('http') ? url : ('https://' + url.replace(/^\/+/,'')));
   const r2 = await fetch(proxied);
   if (!r2.ok) throw new Error(`Fetch failed: ${r2.status}`);
@@ -170,7 +180,8 @@ async function fetchJSON(url){
   return js;
 }
 
-/* ---------- math ---------- */
+//
+// ---- math ----
 function normalizeVec(v){ let s=0; for(let i=0;i<v.length;i++) s+=v[i]*v[i]; const n=Math.sqrt(s)||1; for(let i=0;i<v.length;i++) v[i]/=n; return v; }
 function cosineTopK(q, topk){
   const N=DOCS.length, dim=D; const scores=new Array(N); const t0=performance.now();
@@ -179,7 +190,8 @@ function cosineTopK(q, topk){
   return scores.slice(0,topk).map((p,idx)=>({rank:idx+1, idx:p[0], score:p[1]}));
 }
 
-/* ---------- embeddings ---------- */
+//
+// ---- embeddings ----
 async function loadModel(){
   extractor = await pipeline('feature-extraction', 'Xenova/all-MiniLM-L6-v2', { quantized:true });
 }
@@ -191,8 +203,11 @@ async function embedBatch(texts, normalize){
   return { data: vec, dim: vec.length };
 }
 async function embedAllDocs(){
+  if (EMBEDDING_IN_FLIGHT) return;  // avoid overlapping re-embeds
+  EMBEDDING_IN_FLIGHT = true;
   const B=16, N=DOCS.length; let dim=null; const store=[]; const t0=performance.now();
   const prog=$('#prog'); prog.style.display='block'; prog.value=0; prog.max=Math.ceil(N/B);
+  setPipe('#p1','embedding docs…','warn');
   for(let i=0;i<N;i+=B){
     const chunk=DOCS.slice(i,i+B).map(d=>d.text);
     const { data, dim:d } = await embedBatch(chunk, $('#normalize').checked);
@@ -200,19 +215,23 @@ async function embedAllDocs(){
     store.push(data);
     prog.value+=1;
   }
-  const all=new Float32Array(store.reduce((s,a)=>s+a.length,0));
-  let off=0; for(const a of store){ all.set(a,off); off+=a.length; }
+  const all=new Float32Array(store.reduce((s,a)=>s+a.length,0)); let off=0; for(const a of store){ all.set(a,off); off+=a.length; }
   D=dim; DOC_EMB=all; $('#dim').textContent=String(D); $('#t1').textContent=(performance.now()-t0).toFixed(1);
   setPipe('#p1',`embedded ${N} docs`,'good'); prog.style.display='none';
+  EMBEDDING_IN_FLIGHT = false;
 }
+
 async function embedOneQuery(qText){
+  const t0=performance.now();
   const out = await extractor(qText, { pooling:'mean', normalize: $('#normalize').checked });
   let qv; if(out?.data) qv=out.data; else if(Array.isArray(out)) qv=Float32Array.from(out[0]); else qv=Float32Array.from(out);
   if(!$('#normalize').checked) normalizeVec(qv);
+  $('#t2').textContent=(performance.now()-t0).toFixed(1);
   return qv;
 }
 
-/* ---------- UI ---------- */
+//
+// ---- UI render ----
 function fillQueries(){
   const sel=$('#querySel'); sel.innerHTML='';
   QUERIES.forEach((q,i)=>{ const opt=document.createElement('option'); opt.value=String(i); opt.textContent=q; sel.appendChild(opt); });
@@ -232,16 +251,62 @@ function renderResults(items){
   $('#context').textContent=assembled.join('\n\n');
 }
 
-/* ---------- wiring ---------- */
-$('#init').addEventListener('click', async ()=>{
+//
+// ---- reactive behavior ----
+let lastQueryIndex = 0;
+async function runSearch(){
+  if (!READY) return;
+  try {
+    setPipe('#p2','embedding query…','warn');
+    const qText = QUERIES[lastQueryIndex];
+    const qv = await embedOneQuery(qText);
+    setPipe('#p2','query ready','good');
+
+    const k = Math.max(1, Math.min(+$('#topk').value|0, 9999));
+    const items = cosineTopK(qv, k);
+    renderResults(items);
+    setPipe('#p3', `top-k=${k}`,'good');
+    setPipe('#p4','assembled','good');
+  } catch (e) {
+    console.error(e);
+    setPipe('#p3','failed','err');
+  }
+}
+
+function onParamsChanged(){
+  if (!READY) return;
+  // Only retrieval depends on top-k — re-run search
+  runSearch();
+}
+
+// query change -> re-run
+$('#querySel').addEventListener('change', ()=>{
+  lastQueryIndex = +$('#querySel').value|0;
+  runSearch();
+});
+
+// topk changes -> instant re-run (via syncPair handlers)
+$('#topk').addEventListener('input', onParamsChanged);
+$('#topkNum').addEventListener('input', onParamsChanged);
+
+// normalize change -> re-embed docs, then re-run
+$('#normalize').addEventListener('change', async ()=>{
+  if (!READY) return;
+  await embedAllDocs();  // respects normalize flag
+  runSearch();
+});
+
+//
+// ---- boot pipeline (auto) ----
+async function boot(){
   try{
-    const dsUrl=$('#dsUrl').value.trim(); const qUrl=$('#qUrl').value.trim();
     $('#status').textContent='fetching JSON…'; setPipe('#p0','fetching dataset & queries…','warn');
-    const [ds, qs] = await Promise.all([fetchJSON(dsUrl), fetchJSON(qUrl)]);
+    const [ds, qs] = await Promise.all([fetchJSON(DATASET_URL), fetchJSON(QUERIES_URL)]);
     if(!Array.isArray(ds)) throw new Error('dataset.json must be an array of {id,title,text}');
     DOCS = ds.map((r,i)=>({ id:String(r.id??`row-${i}`), title:String(r.title??''), text:String(r.text??'') }));
     QUERIES = Array.isArray(qs) ? qs.slice() : (Array.isArray(qs.queries) ? qs.queries.slice() : []);
     if(QUERIES.length===0) throw new Error('queries.json has no queries');
+
     $('#ndocs').textContent=String(DOCS.length);
     setPipe('#p0',`dataset: ${DOCS.length} • queries: ${QUERIES.length}`,'good');
 
@@ -252,23 +317,24 @@ $('#init').addEventListener('click', async ()=>{
     await embedAllDocs();
 
     fillQueries();
-    $('#model').disabled=false; $('#run').disabled=false; $('#status').textContent='ready'; setPipe('#p2','pick a query','warn');
+    $('#model').disabled=false;
+    $('#status').textContent='ready';
+    setPipe('#p2','pick a query (auto-selected)','warn');
+
+    // Select first query and run automatically
+    lastQueryIndex = 0;
+    $('#querySel').value = '0';
+    READY = true;
+    await runSearch();
+    setPipe('#p2','query ready','good');
   }catch(e){
     console.error(e);
     $('#status').textContent='failed: '+e.message;
     setPipe('#p0','failed','err'); setPipe('#p1','failed','err');
   }
-});
+}
 
-$('#run').addEventListener('click', async ()=>{
-  try{
-    const qi=+$('#querySel').value|0; const qText=QUERIES[qi]; setPipe('#p2',`query #${qi+1}`,'good');
-    const t0=performance.now(); const qv=await embedOneQuery(qText); $('#t2').textContent=(performance.now()-t0).toFixed(1);
-    const k=+$('#topk').value|0; const items=cosineTopK(qv,k); renderResults(items); setPipe('#p3',`top-k=${k}`,'good'); setPipe('#p4','assembled','good');
-  }catch(e){ console.error(e); setPipe('#p3','failed','err'); }
-});
-
-window.addEventListener('load', ()=>{ setPipe('#p0','idle','warn'); $('#status').textContent='idle'; });
+window.addEventListener('DOMContentLoaded', boot);
 </script>
 </body>
 </html>
