@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <title>Tiny RAG Visualizer — Client-side Embeddings (HF JSON + Instant UI)</title>
+  <title>Tiny RAG Visualizer — Precomputed Docs (HF)</title>
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <style>
     :root { --bg:#0b0d10; --panel:#12161b; --muted:#8a96a3; --fg:#e8eef5; --acc:#69b6ff; --ok:#5bd68a; --warn:#ffb15a; --err:#ff6b6b; }
@@ -14,7 +14,7 @@
     .col.sm{flex:0 0 380px}
     label{display:block;margin:10px 0 6px;color:var(--muted)}
     input[type="range"]{width:100%}
-    input[type="number"],textarea,select{width:100%;background:#0f141b;border:1px solid #222b39;color:var(--fg);border-radius:8px;padding:8px}
+    input[type="number"],select{width:100%;background:#0f141b;border:1px solid #222b39;color:var(--fg);border-radius:8px;padding:8px}
     .btn{background:#1b2532;border:1px solid #2a374a;color:var(--fg);padding:8px 10px;border-radius:8px;cursor:pointer}
     .muted{color:var(--muted)}
     .bar{height:8px;background:#233044;border-radius:999px;overflow:hidden}
@@ -33,34 +33,21 @@
     @media (max-width:900px){.grid{grid-template-columns:1fr}}
     .small{font-size:12px}
     .mono{font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, monospace}
-    .footer{margin-top:8px;color:var(--muted)}
-    progress{width:100%}
-    .hidden{display:none}
   </style>
 </head>
 <body>
 <div class="app">
-  <h1>🧩 Tiny RAG Visualizer — <span class="muted">client-side embeddings from Hugging Face</span></h1>
+  <h1>🧩 Tiny RAG Visualizer — <span class="muted">precomputed doc embeddings</span></h1>
 
   <div class="row">
     <div class="col sm">
-      <!-- Links + load button are hidden and run automatically -->
-      <div class="hidden">
-        <input id="dsUrl" />
-        <input id="qUrl" />
-        <button class="btn" id="init">Load & Embed</button>
-      </div>
-
       <div style="display:flex;gap:8px;align-items:center">
         <span id="status" class="muted small">initializing…</span>
-      </div>
-      <div style="margin-top:6px">
-        <progress id="prog" value="0" max="1" style="display:none"></progress>
       </div>
 
       <label style="margin-top:14px">Model</label>
       <select id="model" disabled>
-        <option value="Xenova/all-MiniLM-L6-v2">Xenova/all-MiniLM-L6-v2 (quantized)</option>
+        <option value="Xenova/all-MiniLM-L6-v2">Xenova/all-MiniLM-L6-v2 (queries only)</option>
       </select>
 
       <label>Query</label>
@@ -73,11 +60,8 @@
           <input id="topkNum" type="number" min="1" max="10" step="1" value="6"/>
         </div>
         <div>
-          <label>Normalize & cosine</label>
-          <div style="display:flex;gap:8px;align-items:center">
-            <input id="normalize" type="checkbox" checked />
-            <span class="muted small">unit-length vectors</span>
-          </div>
+          <label>Docs normalization</label>
+          <div class="muted small">pre-normalized (cosine via inner product)</div>
         </div>
       </div>
 
@@ -85,24 +69,18 @@
         <span class="badge">N docs: <span id="ndocs">—</span></span>
         <span class="badge">dim: <span id="dim">—</span></span>
       </div>
-
-      <div class="footer small">
-        Loads JSON from Hugging Face (public), embeds with <code class="inline">Transformers.js</code>. Changes apply instantly.
-      </div>
     </div>
 
     <div class="col">
       <label>Pipeline</label>
       <div class="pipeline" id="pipeline">
-        <div class="pipebox" id="p0">Fetch JSON<br><span class="muted small" id="p0meta">—</span></div>
+        <div class="pipebox" id="p0">Fetch JSON+vectors<br><span class="muted small" id="p0meta">—</span></div>
         <div class="arrow">➜</div>
-        <div class="pipebox" id="p1">Embed docs<br><span class="muted small" id="p1meta">—</span></div>
+        <div class="pipebox" id="p1">Embed query<br><span class="muted small" id="p1meta">—</span></div>
         <div class="arrow">➜</div>
-        <div class="pipebox" id="p2">Embed query<br><span class="muted small" id="p2meta">—</span></div>
+        <div class="pipebox" id="p2">Retrieve<br><span class="muted small" id="p2meta">—</span></div>
         <div class="arrow">➜</div>
-        <div class="pipebox" id="p3">Retrieve<br><span class="muted small" id="p3meta">—</span></div>
-        <div class="arrow">➜</div>
-        <div class="pipebox" id="p4">Assemble<br><span class="muted small" id="p4meta">—</span></div>
+        <div class="pipebox" id="p3">Assemble<br><span class="muted small" id="p3meta">—</span></div>
       </div>
 
       <div class="grid" style="margin-top:10px">
@@ -118,125 +96,63 @@
 
       <div style="margin-top:10px">
         <span class="badge">t_fetch: <span id="t0">—</span> ms</span>
-        <span class="badge">t_embed_docs: <span id="t1">—</span> ms</span>
-        <span class="badge">t_embed_query: <span id="t2">—</span> ms</span>
-        <span class="badge">t_retrieve: <span id="t3">—</span> ms</span>
+        <span class="badge">t_embed_query: <span id="t1">—</span> ms</span>
+        <span class="badge">t_retrieve: <span id="t2">—</span> ms</span>
       </div>
     </div>
   </div>
 </div>
 
-<!-- All logic runs as an ES module -->
 <script type="module">
-import { pipeline, env } from 'https://cdn.jsdelivr.net/npm/@xenova/transformers@2.17.2';
-env.allowLocalModels = false;
+import { pipeline } from 'https://cdn.jsdelivr.net/npm/@xenova/transformers@2.17.2';
 
-//
-// ---- CONFIG: your Hugging Face raw JSON files ----
-//
-const DATASET_URL = "https://huggingface.co/datasets/3rd-Degree-Burn/RAG/resolve/main/dataset.json";
-const QUERIES_URL = "https://huggingface.co/datasets/3rd-Degree-Burn/RAG/resolve/main/queries.json";
-
-//
-// ---- tiny helpers / UI ----
-//
 const $ = s => document.querySelector(s);
-function setPipe(id, meta, cls='good'){ const el=$(id); el.classList.remove('good','warn','err'); el.classList.add(cls); $(id+'meta').textContent=meta; }
-function syncPair(range,num){
-  const apply = ()=>{ range.value = num.value = Math.max(+range.min, Math.min(+range.max, +range.value||+range.min)); };
-  range.addEventListener('input', ()=>{ num.value = range.value; onParamsChanged(); });
-  num.addEventListener('input', ()=>{ range.value = num.value; apply(); onParamsChanged(); });
-}
+const syncPair=(range,num)=>{range.addEventListener('input',()=>{num.value=range.value; onParamsChanged();}); num.addEventListener('input',()=>{range.value=num.value; onParamsChanged();});};
 syncPair($('#topk'), $('#topkNum'));
+function setPipe(id, meta, cls='good'){ const el=$(id); el.classList.remove('good','warn','err'); el.classList.add(cls); $(id+'meta').textContent=meta; }
 
 //
-// ---- state ----
-let DOCS = [];         // [{id,title,text}]
-let QUERIES = [];      // [string]
-let DOC_EMB = null;    // Float32Array length=N*D
-let D = 0;             // embedding dim
-let extractor = null;  // Transformers.js pipeline instance
-let READY = false;     // ready for interactive updates
-let EMBEDDING_IN_FLIGHT = false;
-
+// URLs on your HF dataset repo (after you upload the pack from Colab)
 //
-// ---- fetch (with CORS-friendly fallback) ----
-async function fetchText(url) {
-  try {
-    const r = await fetch(url, { method:'GET' });
-    if (r.ok) return await r.text();
-  } catch (_) {}
-  const proxied = 'https://r.jina.ai/' + (url.startsWith('http') ? url : ('https://' + url.replace(/^\/+/,'')));
-  const r2 = await fetch(proxied);
-  if (!r2.ok) throw new Error(`Fetch failed: ${r2.status}`);
+const DATASET_URL  = "https://huggingface.co/datasets/3rd-Degree-Burn/RAG/resolve/main/dataset.json";
+const QUERIES_URL  = "https://huggingface.co/datasets/3rd-Degree-Burn/RAG/resolve/main/queries.json";
+const MANIFEST_URL = "https://huggingface.co/datasets/3rd-Degree-Burn/RAG/resolve/main/manifest-web.json"; // -> docs.bin path lives inside
+
+async function fetchText(url){
+  try { const r = await fetch(url); if(r.ok) return await r.text(); } catch(_){ }
+  const r2 = await fetch('https://r.jina.ai/' + url);
+  if(!r2.ok) throw new Error('Fetch failed '+r2.status);
   return await r2.text();
 }
-async function fetchJSON(url){
-  const t0 = performance.now();
-  const txt = await fetchText(url);
-  let js;
-  try { js = JSON.parse(txt); } catch (e) { throw new Error('Invalid JSON'); }
-  $('#t0').textContent = (performance.now()-t0).toFixed(1);
-  return js;
-}
+async function fetchJSON(url){ const t0=performance.now(); const txt=await fetchText(url); const js=JSON.parse(txt); $('#t0').textContent=(performance.now()-t0).toFixed(1); return js; }
+async function fetchBin(url){ const t0=performance.now(); const r = await fetch(url); if(!r.ok) throw new Error('Bin fetch failed '+r.status); const buf = await r.arrayBuffer(); $('#t0').textContent=(performance.now()-t0).toFixed(1); return buf; }
 
-//
-// ---- math ----
+let DOCS=[], QUERIES=[], DOC_EMB=null, D=0, extractor=null, READY=false, lastQueryIndex=0;
+
 function normalizeVec(v){ let s=0; for(let i=0;i<v.length;i++) s+=v[i]*v[i]; const n=Math.sqrt(s)||1; for(let i=0;i<v.length;i++) v[i]/=n; return v; }
 function cosineTopK(q, topk){
   const N=DOCS.length, dim=D; const scores=new Array(N); const t0=performance.now();
-  for(let i=0;i<N;i++){ let s=0, off=i*dim; for(let j=0;j<dim;j++) s += q[j]*DOC_EMB[off+j]; scores[i]=[i,s]; }
-  scores.sort((a,b)=>b[1]-a[1]); $('#t3').textContent=(performance.now()-t0).toFixed(1);
+  for(let i=0;i<N;i++){ let s=0, off=i*dim; for(let j=0;j<dim;j++) s+=q[j]*DOC_EMB[off+j]; scores[i]=[i,s]; }
+  scores.sort((a,b)=>b[1]-a[1]); $('#t2').textContent=(performance.now()-t0).toFixed(1);
   return scores.slice(0,topk).map((p,idx)=>({rank:idx+1, idx:p[0], score:p[1]}));
 }
 
-//
-// ---- embeddings ----
-async function loadModel(){
-  extractor = await pipeline('feature-extraction', 'Xenova/all-MiniLM-L6-v2', { quantized:true });
-}
-async function embedBatch(texts, normalize){
-  const out = await extractor(texts, { pooling:'mean', normalize });
-  if (out?.data && out?.dims?.length===2) return { data: out.data, dim: out.dims[1] };
-  if (Array.isArray(out)) { const dim=out[0].length; const data=new Float32Array(out.length*dim); for(let i=0;i<out.length;i++) data.set(out[i], i*dim); return { data, dim }; }
-  const vec = out?.data ? out.data : Float32Array.from(out);
-  return { data: vec, dim: vec.length };
-}
-async function embedAllDocs(){
-  if (EMBEDDING_IN_FLIGHT) return;  // avoid overlapping re-embeds
-  EMBEDDING_IN_FLIGHT = true;
-  const B=16, N=DOCS.length; let dim=null; const store=[]; const t0=performance.now();
-  const prog=$('#prog'); prog.style.display='block'; prog.value=0; prog.max=Math.ceil(N/B);
-  setPipe('#p1','embedding docs…','warn');
-  for(let i=0;i<N;i+=B){
-    const chunk=DOCS.slice(i,i+B).map(d=>d.text);
-    const { data, dim:d } = await embedBatch(chunk, $('#normalize').checked);
-    if(dim==null) dim=d;
-    store.push(data);
-    prog.value+=1;
-  }
-  const all=new Float32Array(store.reduce((s,a)=>s+a.length,0)); let off=0; for(const a of store){ all.set(a,off); off+=a.length; }
-  D=dim; DOC_EMB=all; $('#dim').textContent=String(D); $('#t1').textContent=(performance.now()-t0).toFixed(1);
-  setPipe('#p1',`embedded ${N} docs`,'good'); prog.style.display='none';
-  EMBEDDING_IN_FLIGHT = false;
-}
-
+async function loadModel(){ extractor = await pipeline('feature-extraction', 'Xenova/all-MiniLM-L6-v2', { quantized:true }); }
 async function embedOneQuery(qText){
   const t0=performance.now();
-  const out = await extractor(qText, { pooling:'mean', normalize: $('#normalize').checked });
-  let qv; if(out?.data) qv=out.data; else if(Array.isArray(out)) qv=Float32Array.from(out[0]); else qv=Float32Array.from(out);
-  if(!$('#normalize').checked) normalizeVec(qv);
-  $('#t2').textContent=(performance.now()-t0).toFixed(1);
+  const out = await extractor(qText, { pooling:'mean', normalize:true }); // docs are pre-normalized
+  const qv = out?.data ? out.data : (Array.isArray(out) ? Float32Array.from(out[0]) : Float32Array.from(out));
+  normalizeVec(qv); // ensure unit-length
+  $('#t1').textContent=(performance.now()-t0).toFixed(1);
   return qv;
 }
 
-//
-// ---- UI render ----
 function fillQueries(){
   const sel=$('#querySel'); sel.innerHTML='';
   QUERIES.forEach((q,i)=>{ const opt=document.createElement('option'); opt.value=String(i); opt.textContent=q; sel.appendChild(opt); });
   sel.disabled=false;
 }
+
 function renderResults(items){
   const res=$('#results'); res.innerHTML=''; $('#retCount').textContent=String(items.length); const assembled=[];
   items.forEach(it=>{
@@ -251,82 +167,55 @@ function renderResults(items){
   $('#context').textContent=assembled.join('\n\n');
 }
 
-//
-// ---- reactive behavior ----
-let lastQueryIndex = 0;
 async function runSearch(){
   if (!READY) return;
-  try {
-    setPipe('#p2','embedding query…','warn');
-    const qText = QUERIES[lastQueryIndex];
-    const qv = await embedOneQuery(qText);
-    setPipe('#p2','query ready','good');
-
-    const k = Math.max(1, Math.min(+$('#topk').value|0, 9999));
-    const items = cosineTopK(qv, k);
-    renderResults(items);
-    setPipe('#p3', `top-k=${k}`,'good');
-    setPipe('#p4','assembled','good');
-  } catch (e) {
-    console.error(e);
-    setPipe('#p3','failed','err');
-  }
+  setPipe('#p1','embedding query…','warn');
+  const qv = await embedOneQuery(QUERIES[lastQueryIndex]);
+  setPipe('#p1','query ready','good');
+  const k = Math.max(1, +$('#topk').value|0);
+  const items = cosineTopK(qv, k);
+  renderResults(items);
+  setPipe('#p2',`top-k=${k}`,'good'); setPipe('#p3','assembled','good');
 }
+function onParamsChanged(){ if(READY) runSearch(); }
 
-function onParamsChanged(){
-  if (!READY) return;
-  // Only retrieval depends on top-k — re-run search
-  runSearch();
-}
-
-// query change -> re-run
-$('#querySel').addEventListener('change', ()=>{
-  lastQueryIndex = +$('#querySel').value|0;
-  runSearch();
-});
-
-// topk changes -> instant re-run (via syncPair handlers)
+$('#querySel').addEventListener('change', ()=>{ lastQueryIndex=+$('#querySel').value|0; runSearch(); });
 $('#topk').addEventListener('input', onParamsChanged);
 $('#topkNum').addEventListener('input', onParamsChanged);
 
-// normalize change -> re-embed docs, then re-run
-$('#normalize').addEventListener('change', async ()=>{
-  if (!READY) return;
-  await embedAllDocs();  // respects normalize flag
-  runSearch();
-});
-
-//
-// ---- boot pipeline (auto) ----
 async function boot(){
   try{
-    $('#status').textContent='fetching JSON…'; setPipe('#p0','fetching dataset & queries…','warn');
-    const [ds, qs] = await Promise.all([fetchJSON(DATASET_URL), fetchJSON(QUERIES_URL)]);
-    if(!Array.isArray(ds)) throw new Error('dataset.json must be an array of {id,title,text}');
+    setPipe('#p0','fetching dataset & queries…','warn');
+    const [ds, qs, manifest] = await Promise.all([
+      fetchJSON(DATASET_URL),
+      fetchJSON(QUERIES_URL),
+      fetchJSON(MANIFEST_URL),
+    ]);
+    if(!Array.isArray(ds)) throw new Error('dataset.json must be an array');
     DOCS = ds.map((r,i)=>({ id:String(r.id??`row-${i}`), title:String(r.title??''), text:String(r.text??'') }));
     QUERIES = Array.isArray(qs) ? qs.slice() : (Array.isArray(qs.queries) ? qs.queries.slice() : []);
-    if(QUERIES.length===0) throw new Error('queries.json has no queries');
+    if(QUERIES.length===0) throw new Error('queries.json empty');
 
-    $('#ndocs').textContent=String(DOCS.length);
-    setPipe('#p0',`dataset: ${DOCS.length} • queries: ${QUERIES.length}`,'good');
+    const base = MANIFEST_URL.replace(/manifest-web\.json$/,'');
+    const docsBuf = await fetchBin(base + manifest.files.docs_bin);
+    const docs = new Float32Array(docsBuf);
+    const [n,d] = manifest.shapes.docs;
+    if (docs.length !== n*d) throw new Error(`docs.bin length ${docs.length} != ${n*d}`);
+    DOC_EMB = docs; D = d;
 
-    $('#status').textContent='loading model…'; setPipe('#p1','loading model…','warn');
+    $('#ndocs').textContent = String(n);
+    $('#dim').textContent  = String(d);
+    setPipe('#p0',`dataset: ${DOCS.length} • vectors: ${n}x${d}`,'good');
+
+    setPipe('#p1','loading model…','warn');
     await loadModel();
-
-    $('#status').textContent='embedding docs…';
-    await embedAllDocs();
 
     fillQueries();
     $('#model').disabled=false;
     $('#status').textContent='ready';
-    setPipe('#p2','pick a query (auto-selected)','warn');
-
-    // Select first query and run automatically
-    lastQueryIndex = 0;
-    $('#querySel').value = '0';
+    lastQueryIndex = 0; $('#querySel').value='0';
     READY = true;
-    await runSearch();
-    setPipe('#p2','query ready','good');
+    runSearch();
   }catch(e){
     console.error(e);
     $('#status').textContent='failed: '+e.message;
