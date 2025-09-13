@@ -2,10 +2,10 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <title>Tiny RAG Visualizer (Pure HTML/CSS/JS)</title>
+  <title>Tiny RAG Visualizer — Precomputed (Client-Only)</title>
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <style>
-    :root { --bg:#0b0d10; --panel:#12161b; --muted:#8a96a3; --fg:#e8eef5; --acc:#69b6ff; --ok:#5bd68a; --warn:#ffb15a; }
+    :root { --bg:#0b0d10; --panel:#12161b; --muted:#8a96a3; --fg:#e8eef5; --acc:#69b6ff; --ok:#5bd68a; --warn:#ffb15a; --err:#ff6b6b; }
     *{box-sizing:border-box} body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.45 ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,Arial}
     h1{font-size:18px;margin:16px 0}
     .app{max-width:1100px;margin:0 auto;padding:16px}
@@ -28,6 +28,8 @@
     .pipeline{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
     .pipebox{background:#0e141b;border:1px solid #1f2837;border-radius:10px;padding:8px 10px;min-width:140px}
     .pipebox.good{outline:2px solid var(--ok)}
+    .pipebox.warn{outline:2px solid var(--warn)}
+    .pipebox.err{outline:2px solid var(--err)}
     .arrow{color:var(--muted)}
     .grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
     @media (max-width:900px){.grid{grid-template-columns:1fr}}
@@ -35,62 +37,70 @@
     .mono{font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, monospace}
     .hl{background:#1c2a3a}
     .footer{margin-top:8px;color:var(--muted)}
-    .pill{background:#0f1b26;border:1px solid #243245;border-radius:999px;padding:2px 8px;margin-left:6px}
+    .rowline{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+    .pill{display:inline-flex;gap:6px;align-items:center;background:#0f1b26;border:1px solid #243245;border-radius:999px;padding:3px 8px}
+    .switch{display:inline-flex;gap:8px;align-items:center}
   </style>
-  <!-- fflate for in-browser unzip (fast, tiny) -->
+
+  <!-- unzipper -->
   <script src="https://cdn.jsdelivr.net/npm/fflate@0.8.2/umd/index.min.js"></script>
+  <!-- optional: parquet reader (will try to read docs.parquet for full text; falls back gracefully) -->
+  <script src="https://cdn.jsdelivr.net/npm/parquet-wasm@0.6.1/dist/web/parquet_wasm.js"></script>
 </head>
 <body>
 <div class="app">
-  <h1>🧩 Tiny RAG Visualizer (client-only, precomputed)</h1>
+  <h1>🧩 Tiny RAG Visualizer — <span class="muted">precomputed embeddings</span></h1>
 
   <div class="row">
     <div class="col sm">
-      <label>Data pack</label>
-      <div style="display:flex; gap:8px">
-        <button class="btn" id="loadZip">Load vector_dbs.zip</button>
-        <input type="file" id="zipFile" accept=".zip" style="flex:1" />
+      <label>Data pack (.zip on GitHub Pages)</label>
+      <input id="zipUrl" value="https://gokulmanmadhan.github.io/vector_dbs.zip" />
+      <div class="rowline" style="margin-top:8px">
+        <button class="btn" id="loadZip">Load Pack</button>
+        <span id="status" class="muted small">waiting…</span>
       </div>
-      <div class="small muted" id="status">Pack not loaded.</div>
 
-      <label>Model</label>
+      <label style="margin-top:14px">Model</label>
       <select id="modelSel" disabled></select>
 
-      <label>Query <span class="pill small" id="qHint">select from list (precomputed)</span></label>
+      <label>Query (precomputed)</label>
       <select id="querySel" disabled></select>
-      <textarea id="query" placeholder="(Optional) Type your own — but only precomputed queries have vectors client-side"></textarea>
 
       <div class="grid">
         <div>
           <label>Top-k</label>
-          <input id="topk" type="range" min="1" max="12" step="1" value="6"/>
-          <input id="topkNum" type="number" min="1" max="12" step="1" value="6"/>
+          <input id="topk" type="range" min="1" max="6" step="1" value="6"/>
+          <input id="topkNum" type="number" min="1" max="6" step="1" value="6"/>
         </div>
         <div>
-          <label>Context assembly</label>
-          <select id="contextMode">
-            <option value="snippets">Titles only</option>
-            <option value="full">Full text (needs docs_text.jsonl.gz)</option>
-          </select>
+          <label>Scoring</label>
+          <div class="switch">
+            <input id="usePre" type="radio" name="scoremode" value="pre" checked>
+            <label for="usePre">Precomputed</label>
+            <input id="useClient" type="radio" name="scoremode" value="client">
+            <label for="useClient">Recompute (client)</label>
+          </div>
         </div>
       </div>
 
-      <div style="margin-top:10px;display:flex;gap:8px">
+      <div class="rowline" style="margin-top:10px">
         <button class="btn" id="run" disabled>Run</button>
+        <span id="counts" class="pill small">—</span>
       </div>
 
-      <div class="footer small">
-        100% client-side. Uses precomputed neighbors from <code class="inline">neighbors_topk.json</code>.
-        Optional doc texts via <code class="inline">docs_text.jsonl.gz</code>.
+      <div class="footer small" id="note">
+        Ships <code class="inline">docs.bin</code>, <code class="inline">queries.bin</code>, and <code class="inline">neighbors_topk.json</code>. Tries to read <code class="inline">docs.parquet</code> for full text if present.
       </div>
     </div>
 
     <div class="col">
       <label>Pipeline</label>
       <div class="pipeline" id="pipeline">
-        <div class="pipebox" id="p1">Load Pack<br><span class="muted small" id="p1meta">—</span></div>
+        <div class="pipebox" id="p0">Fetch ZIP<br><span class="muted small" id="p0meta">—</span></div>
         <div class="arrow">➜</div>
-        <div class="pipebox" id="p2">Select Model<br><span class="muted small" id="p2meta">—</span></div>
+        <div class="pipebox" id="p1">Load Model<br><span class="muted small" id="p1meta">—</span></div>
+        <div class="arrow">➜</div>
+        <div class="pipebox" id="p2">Select Query<br><span class="muted small" id="p2meta">—</span></div>
         <div class="arrow">➜</div>
         <div class="pipebox" id="p3">Retrieve<br><span class="muted small" id="p3meta">—</span></div>
         <div class="arrow">➜</div>
@@ -104,254 +114,350 @@
         </div>
         <div>
           <label>Assembled Context</label>
-          <div class="chunk mono small" id="context" style="white-space:pre-wrap; max-height:320px; overflow:auto"></div>
+          <div class="chunk mono small" id="context" style="white-space:pre-wrap; max-height:340px; overflow:auto"></div>
         </div>
       </div>
 
       <div style="margin-top:10px">
+        <span class="badge">t_fetch: <span id="t0">—</span> ms</span>
         <span class="badge">t_load: <span id="t1">—</span> ms</span>
-        <span class="badge">t_select: <span id="t2">—</span> ms</span>
-        <span class="badge">t_retrieve: <span id="t3">—</span> ms</span>
-        <span class="badge">t_assemble: <span id="t4">—</span> ms</span>
+        <span class="badge">t_score: <span id="t2">—</span> ms</span>
+        <span class="badge">t_render: <span id="t3">—</span> ms</span>
       </div>
     </div>
   </div>
 </div>
 
 <script>
-/* ------------------------ Config ------------------------ */
-const ZIP_URL = 'vector_dbs.zip'; // adjust if hosted elsewhere
-
-/* ------------------------ UI helpers ------------------------ */
+/* ============ Helpers ============ */
 const $ = s => document.querySelector(s);
-const syncPair = (range, num) => {
-  range.addEventListener('input', () => { num.value = range.value; });
-  num.addEventListener('input', () => { range.value = num.value; });
+const setPipe = (id, meta, cls='good')=>{
+  const el = $(id);
+  el.classList.remove('good','warn','err');
+  if(cls) el.classList.add(cls);
+  $(id+'meta').textContent = meta;
 };
+const syncPair=(range,num)=>{range.addEventListener('input',()=>num.value=range.value);num.addEventListener('input',()=>range.value=num.value);};
 syncPair($('#topk'), $('#topkNum'));
 
-function setPipe(id, meta, ok=false){
-  const el = $(id);
-  el.classList.toggle('good', ok);
-  $(id+'meta').textContent = meta;
+const td = new TextDecoder();
+const tu = s => s.toLowerCase();            // for case-insensitive map
+const clamp = (v,a,b)=>Math.max(a,Math.min(b,v));
+
+/* ============ Unzip and virtual FS ============ */
+let ZIP_FS = null;       // Map: normalized path -> Uint8Array
+let ROOT = "";           // the subpath that contains vector_dbs (e.g., "vector_dbs" or "content/vector_dbs")
+
+async function fetchArrayBuffer(url){
+  const t0=performance.now();
+  const res = await fetch(url);
+  if(!res.ok) throw new Error(`Fetch failed (${res.status})`);
+  const buf = await res.arrayBuffer();
+  $('#t0').textContent = (performance.now()-t0).toFixed(1);
+  return buf;
 }
 
-/* ------------------------ Unzip + FS ------------------------ */
-let ZIPFS = null; // { path -> Uint8Array }
-
-async function fetchZip(url){
-  const t0 = performance.now();
-  $('#status').textContent = `Fetching ${url} …`;
-  const res = await fetch(url);
-  if(!res.ok) throw new Error(`HTTP ${res.status}`);
-  const buf = await res.arrayBuffer();
-  $('#status').textContent = `Unzipping …`;
+async function loadZip(url){
+  $('#status').textContent = 'fetching…';
+  setPipe('#p0','fetching zip…','warn');
+  const buf = await fetchArrayBuffer(url);
+  $('#status').textContent = 'unzipping…';
+  const t = performance.now();
   const files = fflate.unzipSync(new Uint8Array(buf)); // {name: Uint8Array}
-  const t1 = performance.now();
-  ZIPFS = files;
-  $('#status').textContent = `Pack ready (${Object.keys(files).length} files).`;
-  setPipe('#p1', 'zip loaded', true);
-  $('#t1').textContent = (t1 - t0).toFixed(1);
+  ZIP_FS = new Map();
+  for(const [name, data] of Object.entries(files)){
+    ZIP_FS.set(tu(name), data);
+  }
+  $('#t1').textContent = (performance.now()-t).toFixed(1);
+  // find manifest.json path
+  const candidates = [...ZIP_FS.keys()].filter(k => k.endsWith('/manifest.json'));
+  const vd = candidates.find(k => k.endsWith('vector_dbs/manifest.json')) ||
+             candidates.find(k => k.includes('/vector_dbs/manifest.json')) ||
+             candidates[0];
+  if(!vd) throw new Error('manifest.json not found in zip');
+  ROOT = vd.slice(0, vd.lastIndexOf('vector_dbs/')) + 'vector_dbs/';
+  setPipe('#p0', 'zip ready', 'good');
+  return true;
 }
 
 function readText(path){
-  const u8 = ZIPFS[path];
-  if(!u8) throw new Error(`Missing in zip: ${path}`);
-  return new TextDecoder('utf-8').decode(u8);
+  const key = tu(path);
+  const data = ZIP_FS.get(key);
+  if(!data) throw new Error(`Missing file in zip: ${path}`);
+  return td.decode(data);
+}
+function readJSON(path){ return JSON.parse(readText(path)); }
+function readBinF32(path){
+  const data = ZIP_FS.get(tu(path));
+  if(!data) throw new Error(`Missing bin: ${path}`);
+  return new Float32Array(data.buffer, data.byteOffset, Math.floor(data.byteLength/4));
 }
 
-function readJSON(path){
-  return JSON.parse(readText(path));
+/* ============ Parquet (optional, to show full text) ============ */
+let parquetMod = null;
+(async ()=>{
+  try {
+    parquetMod = await window.parquet_wasm_default(); // loads WASM
+  } catch(e){
+    console.warn('parquet-wasm not available, will skip full-text', e);
+  }
+})();
+function tryReadParquetRows(u8){
+  if(!parquetMod) return null;
+  try {
+    const tbl = parquetMod.read_parquet(u8); // Arrow IPC buffer
+    const cols = tbl.columns();
+    const nameToCol = {};
+    for(let i=0;i<cols.length;i++){
+      nameToCol[cols[i].name] = cols[i];
+    }
+    const n = cols[0].data.length;
+    const rows = [];
+    for(let i=0;i<n;i++){
+      rows.push({
+        id: nameToCol.id?.get(i) ?? '',
+        title: nameToCol.title?.get(i) ?? '',
+        text: nameToCol.text?.get(i) ?? '',   // may not exist; okay
+      });
+    }
+    return rows;
+  } catch(e){
+    console.warn('parquet read failed', e);
+    return null;
+  }
 }
 
-function readMaybe(path){ // returns Uint8Array or null
-  return ZIPFS[path] || null;
+/* ============ State ============ */
+let MANIFEST = null;
+let CURRENT = {
+  modelFolder: null,
+  webManifest: null,
+  docs: null,         // Float32Array
+  queries: null,      // Float32Array
+  docsMeta: null,     // [{id,title,len}]
+  preTopK: null,      // [{query, topk:[{doc_index,score,...}]}]
+  qrows: 0, qcols: 0, drows: 0, dcols: 0,
+  docsText: null      // optional array of full text if parquet present
+};
+
+/* ============ Loading model packs ============ */
+function modelLabel(item){
+  return `${item.model_id}  •  ${item.count_docs} docs  •  ${item.count_queries} queries`;
 }
 
-/* ------------------------ State ------------------------ */
-let ROOT = null;           // vector_dbs/manifest.json
-let MODELS = [];           // from ROOT.items
-let CURRENT = null;        // { manWeb, queries, docsMeta, neighbors, docsTextLUT? }
-let CURRENT_MODEL_FOLDER = null;
-
-/* ------------------------ Load root manifest ------------------------ */
-function populateModels(){
+function fillModelDropdown(){
   const sel = $('#modelSel');
   sel.innerHTML = '';
-  MODELS.forEach(item=>{
+  MANIFEST.items.forEach((it, idx)=>{
     const opt = document.createElement('option');
-    opt.value = item.folder;
-    opt.textContent = `${item.model_id || item.folder}`;
+    opt.value = it.folder;
+    opt.textContent = modelLabel(it);
     sel.appendChild(opt);
   });
-  sel.disabled = MODELS.length===0;
+  sel.disabled = false;
+  setPipe('#p1', 'choose a model', 'warn');
 }
 
-function populateQueries(qs){
+function fillQueryDropdown(queries){
   const sel = $('#querySel');
   sel.innerHTML = '';
-  qs.forEach((q,i)=>{
+  queries.forEach((q, i)=>{
     const opt = document.createElement('option');
     opt.value = String(i);
     opt.textContent = q;
     sel.appendChild(opt);
   });
-  sel.disabled = qs.length===0;
+  sel.disabled = false;
 }
 
-/* ------------------------ Load a model pack ------------------------ */
-function pathJoin(...parts){
-  return parts.join('/').replace(/\/+/g,'/');
+function updateCounts(){
+  const M = CURRENT.webManifest;
+  $('#counts').textContent = `${CURRENT.drows} docs × ${CURRENT.qrows} queries × dim ${M.embedding_dim}`;
 }
 
-function tryLoadDocsText(modelFolder){
-  // Optional: web/docs_text.jsonl.gz (one JSON per line: {id,title,text})
-  const gzPath = pathJoin('vector_dbs', modelFolder, 'web/docs_text.jsonl.gz');
-  const raw = readMaybe(gzPath);
-  if(!raw) return null;
-  // gunzip
-  const unz = fflate.decompressSync(raw);
-  const txt = new TextDecoder('utf-8').decode(unz);
-  const lut = {};
-  txt.split(/\r?\n/).forEach(line=>{
-    if(!line.trim()) return;
-    try {
-      const o = JSON.parse(line);
-      lut[o.id] = o;
-    } catch(e){}
-  });
-  return lut; // { id -> {id,title,text} }
+function getPath(...parts){ return (ROOT + parts.join('/')).replace(/\/+/g,'/'); }
+
+function getModelPaths(folder){
+  const base = getPath(folder);
+  const web = getPath(folder,'web');
+  return {
+    meta: getPath(folder,'meta.json'),
+    docsParquet: getPath(folder,'docs.parquet'),
+    webManifest: getPath(folder,'web/manifest-web.json'),
+    docsBin: getPath(folder,'web/docs.bin'),
+    queriesBin: getPath(folder,'web/queries.bin'),
+    queries: getPath(folder,'web/queries.json'),
+    docsMeta: getPath(folder,'web/docs_meta.json'),
+    neighbors: getPath(folder,'web/neighbors_topk.json')
+  };
 }
 
-function selectModel(modelFolder){
+function innerProductTopK(qIndex, k){
+  const {queries, docs, qcols, dcols, drows} = CURRENT;
+  const start = performance.now();
+  // slice query row
+  const qOff = qIndex * qcols;
+  let best = [];
+  for(let i=0;i<drows;i++){
+    let s=0.0;
+    const dOff = i * dcols;
+    for(let j=0;j<dcols;j++){
+      s += queries[qOff+j] * docs[dOff+j];
+    }
+    best.push([i,s]);
+  }
+  best.sort((a,b)=>b[1]-a[1]);
+  $('#t2').textContent = (performance.now()-start).toFixed(1);
+  return best.slice(0,k).map((pair,rank)=>({rank:rank+1, doc_index:pair[0], score:pair[1]}));
+}
+
+function assembleContext(docIndices){
+  const texts = [];
+  if(CURRENT.docsText){ // from parquet (if available)
+    docIndices.forEach(i=>{
+      const row = CURRENT.docsText[i];
+      if(row?.text) texts.push(row.text);
+    });
+  }
+  return texts.join('\n\n');
+}
+
+/* ============ UI Actions ============ */
+$('#loadZip').addEventListener('click', async ()=>{
+  const url = $('#zipUrl').value.trim();
+  try{
+    await loadZip(url);
+    // read root manifest
+    MANIFEST = readJSON(getPath('manifest.json'));
+    $('#status').textContent = 'pack loaded';
+    setPipe('#p0','zip → OK','good');
+    fillModelDropdown();
+    $('#run').disabled = false;
+  }catch(e){
+    console.error(e);
+    $('#status').textContent = 'failed: ' + e.message;
+    setPipe('#p0','failed','err');
+  }
+});
+
+$('#modelSel').addEventListener('change', async ()=>{
+  const folder = $('#modelSel').value;
+  if(!folder) return;
+  try{
+    const t0 = performance.now();
+    setPipe('#p1','loading model…','warn');
+    const paths = getModelPaths(folder);
+    const webM = readJSON(paths.webManifest);
+    const queries = readJSON(paths.queries);
+    const docsMeta = readJSON(paths.docsMeta);
+    const preTopK = readJSON(paths.neighbors);
+    const docs = readBinF32(paths.docsBin);
+    const queriesBin = readBinF32(paths.queriesBin);
+
+    CURRENT.modelFolder = folder;
+    CURRENT.webManifest = webM;
+    CURRENT.docs = docs;
+    CURRENT.queries = queriesBin;
+    CURRENT.docsMeta = docsMeta;
+    CURRENT.preTopK = preTopK;
+    CURRENT.drows = webM.shapes.docs[0];
+    CURRENT.dcols = webM.shapes.docs[1];
+    CURRENT.qrows = webM.shapes.queries[0];
+    CURRENT.qcols = webM.shapes.queries[1];
+    CURRENT.docsText = null; // reset
+
+    // optional: try to load full text via docs.parquet
+    try{
+      const pqKey = tu(paths.docsParquet);
+      if(ZIP_FS.has(pqKey)){
+        const u8 = ZIP_FS.get(pqKey);
+        const rows = tryReadParquetRows(u8);
+        if(rows && rows.length === CURRENT.drows){
+          CURRENT.docsText = rows;
+        }
+      }
+    }catch(e){ /* ignore */ }
+
+    fillQueryDropdown(queries);
+    updateCounts();
+    $('#topk').max = String(Math.min( (CURRENT.preTopK?.[0]?.topk?.length || 6), 50));
+    $('#topkNum').max = $('#topk').max;
+    $('#t1').textContent = (performance.now()-t0).toFixed(1);
+    setPipe('#p1', `loaded ${folder}`, 'good');
+    setPipe('#p2', 'pick a query', 'warn');
+  }catch(e){
+    console.error(e);
+    setPipe('#p1','failed','err');
+  }
+});
+
+$('#run').addEventListener('click', ()=>{
   const t0 = performance.now();
-  CURRENT_MODEL_FOLDER = modelFolder;
-  const base = pathJoin('vector_dbs', modelFolder, 'web');
-  const manWeb = readJSON(pathJoin(base, 'manifest-web.json'));
-  const queries = readJSON(pathJoin(base, 'queries.json'));
-  const docsMeta = readJSON(pathJoin(base, 'docs_meta.json'));
-  const neighbors = readJSON(pathJoin(base, 'neighbors_topk.json'));
-  const docsTextLUT = tryLoadDocsText(modelFolder); // optional
+  const k = +$('#topk').value|0;
+  const qIndex = +$('#querySel').value|0;
+  const scoring = document.querySelector('input[name="scoremode"]:checked').value;
 
-  CURRENT = { manWeb, queries, docsMeta, neighbors, docsTextLUT };
-  populateQueries(queries);
+  setPipe('#p2', `query #${qIndex+1}`, 'good');
 
-  const t1 = performance.now();
-  setPipe('#p2', `${modelFolder}`, true);
-  $('#t2').textContent = (t1 - t0).toFixed(1);
-  $('#run').disabled = false;
-}
+  let items = [];
+  if(scoring === 'pre'){
+    // read from neighbors_topk.json
+    const entry = CURRENT.preTopK[qIndex];
+    items = (entry?.topk || []).slice(0,k).map(x=>({
+      rank: x.rank, doc_index: x.doc_index, score: x.score, doc_id: x.doc_id, title: x.title
+    }));
+    $('#t2').textContent = '0.0';
+  } else {
+    // recompute on client via dot products
+    const top = innerProductTopK(qIndex, k);
+    items = top.map(x=>{
+      const di = x.doc_index;
+      const meta = CURRENT.docsMeta[di] || {};
+      return {rank:x.rank, doc_index:di, score:x.score, doc_id: meta.id, title: meta.title||''};
+    });
+  }
 
-/* ------------------------ Retrieval (precomputed) ------------------------ */
-function run(){
-  if(!CURRENT){ alert('Load pack and select a model first.'); return; }
-  const topk = Math.max(1, +$('#topk').value|0);
-  const qSel = $('#querySel');
-  const qIdx = qSel.selectedIndex >= 0 ? qSel.selectedIndex : 0;
-  const qText = CURRENT.queries[qIdx] || '';
-  $('#query').value = qText; // reflect in textarea
-
-  const t0 = performance.now();
-  const entry = CURRENT.neighbors[qIdx]; // { query, topk: [{doc_index, doc_id, title, score}, ...] }
-  const items = (entry?.topk || []).slice(0, topk);
-  const t1 = performance.now();
-
-  // Render results list
-  const container = $('#results');
-  container.innerHTML = '';
+  // Render list
+  const res = $('#results'); res.innerHTML = '';
   $('#retCount').textContent = String(items.length);
-
-  items.forEach((it, rank)=>{
-    const wrap = document.createElement('div');
-    wrap.className = 'chunk';
-    const header = document.createElement('div');
-    header.innerHTML = `<strong>#${rank+1}</strong> <span class="muted">doc</span> <code class="inline">${it.doc_id}</code> `
-      + `<span class="muted">title</span> <code class="inline">${(it.title||'').replace(/</g,'&lt;')}</code>`
-      + ` <span class="score">score: ${it.score.toFixed(3)}</span>`;
-    const bar = document.createElement('div'); bar.className = 'bar'; bar.title = String(it.score.toFixed(4));
+  let assembled = [];
+  items.forEach(it=>{
+    const wrap = document.createElement('div'); wrap.className='chunk';
+    const bar = document.createElement('div'); bar.className='bar'; bar.title=String(it.score.toFixed(4));
     const fill = document.createElement('i'); fill.style.width = `${Math.max(0, Math.min(1, it.score))*100}%`;
     bar.appendChild(fill);
+    const header = document.createElement('div');
+    const title = it.title ? it.title : '(no title)';
+    header.innerHTML = `<strong>#${it.rank}</strong> <span class="muted">doc</span> <code class="inline">${it.doc_id||'idx:'+it.doc_index}</code> <span class="score">score: ${it.score.toFixed(3)}</span><br><span class="muted small">${title}</span>`;
     wrap.appendChild(header);
     wrap.appendChild(bar);
-    container.appendChild(wrap);
+
+    // optional snippet if we have full text (from parquet)
+    if(CURRENT.docsText){
+      const text = CURRENT.docsText[it.doc_index]?.text || '';
+      if(text){
+        const snip = document.createElement('div');
+        snip.className='small'; snip.style.marginTop='6px';
+        snip.textContent = text.slice(0, 420) + (text.length>420 ? '…' : '');
+        wrap.appendChild(snip);
+        assembled.push(text);
+      }
+    }
+    res.appendChild(wrap);
   });
 
-  // Assemble context (if docs_text available)
-  const t2 = performance.now();
-  let context = '';
-  if($('#contextMode').value === 'full' && CURRENT.docsTextLUT){
-    items.forEach((it, idx)=>{
-      const row = CURRENT.docsTextLUT[it.doc_id];
-      if(row && row.text){
-        context += `#${idx+1} — ${row.title||it.doc_id}\n${row.text}\n\n`;
-      } else {
-        context += `#${idx+1} — ${it.title||it.doc_id}\n(text not included in pack)\n\n`;
-      }
-    });
-  } else {
-    context = items.map((it, idx)=> `#${idx+1} — ${it.title||it.doc_id}`).join('\n');
-    if($('#contextMode').value === 'full') context += `\n\n(no docs_text.jsonl.gz found in pack)`;
-  }
-  const t3 = performance.now();
+  const context = CURRENT.docsText ? assembled.join('\n\n') : '(Full text not shipped; include `text` in docs_meta.json or keep docs.parquet and enable parquet reader.)';
+  $('#context').textContent = context;
 
-  $('#context').textContent = context || '(no results)';
-  setPipe('#p3', `top-k=${topk}`, true);
-  setPipe('#p4', `${context.length} chars`, true);
-  $('#t3').textContent = (t1 - t0).toFixed(1);
-  $('#t4').textContent = (t3 - t2).toFixed(1);
-}
-
-/* ------------------------ Wire up ------------------------ */
-$('#loadZip').addEventListener('click', async ()=>{
-  try {
-    await fetchZip(ZIP_URL);
-    ROOT = readJSON('vector_dbs/manifest.json');
-    MODELS = ROOT.items || [];
-    populateModels();
-    $('#modelSel').disabled = false;
-    $('#status').textContent += ' | Manifest loaded.';
-  } catch(e){
-    console.error(e);
-    $('#status').textContent = 'Failed to load zip. You can choose a local file below.';
-  }
+  $('#t3').textContent = (performance.now()-t0).toFixed(1);
+  setPipe('#p3', `top-k=${k}`, 'good');
+  setPipe('#p4', `${context.length} chars`, 'good');
 });
 
-$('#zipFile').addEventListener('change', async (e)=>{
-  const file = e.target.files?.[0];
-  if(!file) return;
-  const t0 = performance.now();
-  $('#status').textContent = `Reading ${file.name} …`;
-  const buf = await file.arrayBuffer();
-  $('#status').textContent = `Unzipping …`;
-  ZIPFS = fflate.unzipSync(new Uint8Array(buf));
-  const t1 = performance.now();
-  ROOT = readJSON('vector_dbs/manifest.json');
-  MODELS = ROOT.items || [];
-  populateModels();
-  $('#modelSel').disabled = false;
-  setPipe('#p1', 'zip (local) loaded', true);
-  $('#t1').textContent = (t1 - t0).toFixed(1);
-  $('#status').textContent = `Pack ready (local).`;
-});
-
-$('#modelSel').addEventListener('change', ()=>{
-  const folder = $('#modelSel').value;
-  selectModel(folder);
-});
-
-$('#querySel').addEventListener('change', ()=>{
-  // keep textarea synced for clarity
-  const idx = $('#querySel').selectedIndex;
-  $('#query').value = CURRENT?.queries?.[idx] || '';
-});
-
-$('#run').addEventListener('click', run);
-
-// Initialize UI
+/* ============ Boot ============ */
 window.addEventListener('load', ()=>{
-  $('#query').value = '';
-  $('#retCount').textContent = '0';
-  setPipe('#p1','—',false); setPipe('#p2','—',false); setPipe('#p3','—',false); setPipe('#p4','—',false);
+  setPipe('#p0','idle','warn');
+  $('#status').textContent = 'ready';
 });
 </script>
 </body>
