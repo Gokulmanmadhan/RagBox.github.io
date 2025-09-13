@@ -15,7 +15,6 @@
     label{display:block;margin:10px 0 6px;color:var(--muted)}
     input[type="range"]{width:100%}
     input[type="number"],textarea,select,input[type="text"]{width:100%;background:#0f141b;border:1px solid #222b39;color:var(--fg);border-radius:8px;padding:8px}
-    textarea{min-height:70px;resize:vertical}
     .btn{background:#1b2532;border:1px solid #2a374a;color:var(--fg);padding:8px 10px;border-radius:8px;cursor:pointer}
     .btn:active{transform:translateY(1px)}
     .muted{color:var(--muted)}
@@ -38,7 +37,7 @@
     .footer{margin-top:8px;color:var(--muted)}
     progress{width:100%}
   </style>
-  <!-- Transformers.js (WebGPU/WebGL/WASM) -->
+  <!-- Transformers.js -->
   <script src="https://cdn.jsdelivr.net/npm/@xenova/transformers@2.17.2"></script>
 </head>
 <body>
@@ -47,16 +46,15 @@
 
   <div class="row">
     <div class="col sm">
-      <label>Google Drive dataset.json (directDownload URL)</label>
+      <label>dataset.json (Drive directDownload)</label>
       <input id="dsUrl" type="text" value="https://drive.google.com/uc?export=download&id=1u5YBq6qxQC1G4JgF4VXAUxCo-1r5YSul" />
-      <label>Google Drive queries.json (directDownload URL)</label>
+      <label>queries.json (Drive directDownload)</label>
       <input id="qUrl" type="text" value="https://drive.google.com/uc?export=download&id=1gDUxkQN64yfvphcufeI_VAgIVp7bryUF" />
 
       <div style="margin-top:8px;display:flex;gap:8px;align-items:center">
         <button class="btn" id="init">Load & Embed</button>
         <span id="status" class="muted small">idle</span>
       </div>
-
       <div style="margin-top:6px">
         <progress id="prog" value="0" max="1" style="display:none"></progress>
       </div>
@@ -66,7 +64,7 @@
         <option value="Xenova/all-MiniLM-L6-v2">Xenova/all-MiniLM-L6-v2 (quantized)</option>
       </select>
 
-      <label>Query (from your Drive file)</label>
+      <label>Query (from Drive)</label>
       <select id="querySel" disabled></select>
 
       <div class="grid">
@@ -90,7 +88,7 @@
       </div>
 
       <div class="footer small">
-        Loads your JSONs from Google Drive (anyone-with-link), embeds with <code class="inline">Transformers.js</code> (MiniLM-L6-v2).
+        Loads JSONs from Drive (public), embeds with <code class="inline">Transformers.js</code>.
       </div>
     </div>
 
@@ -134,213 +132,132 @@
 </div>
 
 <script>
-/* ---------------- helpers / UI ---------------- */
+/* ---------- tiny helpers ---------- */
 const $ = s => document.querySelector(s);
 const syncPair=(range,num)=>{range.addEventListener('input',()=>num.value=range.value);num.addEventListener('input',()=>range.value=num.value);};
 syncPair($('#topk'), $('#topkNum'));
+function setPipe(id, meta, cls='good'){ const el=$(id); el.classList.remove('good','warn','err'); el.classList.add(cls); $(id+'meta').textContent=meta; }
 
-function setPipe(id, meta, cls='good'){
-  const el = $(id);
-  el.classList.remove('good','warn','err');
-  el.classList.add(cls);
-  $(id+'meta').textContent = meta;
-}
-
-/* ---------------- state ---------------- */
+/* ---------- state ---------- */
 let DOCS = [];         // [{id,title,text}]
 let QUERIES = [];      // [string]
-let DOC_EMB = null;    // Float32Array length = N*D
+let DOC_EMB = null;    // Float32Array length=N*D
 let D = 0;             // embedding dim
 let extractor = null;  // transformers.js pipeline
 
-/* ---------------- fetch JSON from Drive ---------------- */
+/* ---------- robust Drive JSON fetch (with CORS fallback) ---------- */
+async function fetchText(url) {
+  // First try direct
+  try {
+    const res = await fetch(url, { method:'GET' });
+    if (res.ok) return await res.text();
+  } catch (e) { /* fall through */ }
+  // Fallback via read-only proxy with CORS enabled
+  const proxied = 'https://r.jina.ai/' + (url.startsWith('http') ? url : ('https://' + url.replace(/^\/+/,'')));
+  const r2 = await fetch(proxied, { method:'GET' });
+  if (!r2.ok) throw new Error(`Drive/Proxy fetch failed: ${r2.status}`);
+  return await r2.text();
+}
 async function fetchJSON(url) {
-  const res = await fetch(url, { method: 'GET' });
-  if (!res.ok) throw new Error(`Fetch failed: ${res.status}`);
-  // Some Drive files return text/plain — still JSON
-  const txt = await res.text();
-  try { return JSON.parse(txt); } catch(e) { throw new Error('Invalid JSON content'); }
-}
-
-function normalizeVec(v){
-  let s=0; for(let i=0;i<v.length;i++) s+=v[i]*v[i];
-  const n = Math.sqrt(s) || 1;
-  for(let i=0;i<v.length;i++) v[i]=v[i]/n;
-  return v;
-}
-
-function cosineTopK(q, topk){
-  const N = DOCS.length, dim = D;
-  const scores = new Array(N);
   const t0 = performance.now();
-  for(let i=0;i<N;i++){
-    let s=0;
-    const base = i*dim;
-    for(let j=0;j<dim;j++) s += q[j] * DOC_EMB[base+j];
-    scores[i] = [i, s];
-  }
-  scores.sort((a,b)=>b[1]-a[1]);
-  $('#t3').textContent = (performance.now()-t0).toFixed(1);
-  return scores.slice(0, topk).map((p, idx)=>({rank: idx+1, idx: p[0], score: p[1]}));
+  const txt = await fetchText(url);
+  let js;
+  try { js = JSON.parse(txt); } catch(e){ throw new Error('Invalid JSON from Drive'); }
+  $('#t0').textContent = (performance.now()-t0).toFixed(1);
+  return js;
 }
 
-/* ---------------- embeddings ---------------- */
+/* ---------- math utils ---------- */
+function normalizeVec(v){ let s=0; for(let i=0;i<v.length;i++) s+=v[i]*v[i]; const n=Math.sqrt(s)||1; for(let i=0;i<v.length;i++) v[i]/=n; return v; }
+function cosineTopK(q, topk){
+  const N=DOCS.length, dim=D; const scores=new Array(N); const t0=performance.now();
+  for(let i=0;i<N;i++){ let s=0, off=i*dim; for(let j=0;j<dim;j++) s += q[j]*DOC_EMB[off+j]; scores[i]=[i,s]; }
+  scores.sort((a,b)=>b[1]-a[1]); $('#t3').textContent=(performance.now()-t0).toFixed(1);
+  return scores.slice(0,topk).map((p,idx)=>({rank:idx+1, idx:p[0], score:p[1]}));
+}
+
+/* ---------- embeddings ---------- */
 async function loadModel(){
   const { pipeline } = window.transformers;
-  extractor = await pipeline('feature-extraction', 'Xenova/all-MiniLM-L6-v2', { quantized: true });
+  extractor = await pipeline('feature-extraction', 'Xenova/all-MiniLM-L6-v2', { quantized:true });
 }
-
 async function embedBatch(texts, normalize){
-  const out = await extractor(texts, { pooling: 'mean', normalize });
-  if (out?.data && out?.dims?.length === 2) {
-    return { data: out.data, dim: out.dims[1] };
-  } else if (Array.isArray(out)) {
-    const dim = out[0].length;
-    const data = new Float32Array(out.length * dim);
-    for(let i=0;i<out.length;i++) data.set(out[i], i*dim);
-    return { data, dim };
-  } else {
-    const vec = out?.data ? out.data : Float32Array.from(out);
-    return { data: vec, dim: vec.length };
-  }
+  const out = await extractor(texts, { pooling:'mean', normalize });
+  if (out?.data && out?.dims?.length===2) return { data: out.data, dim: out.dims[1] };
+  if (Array.isArray(out)) { const dim=out[0].length; const data=new Float32Array(out.length*dim); for(let i=0;i<out.length;i++) data.set(out[i], i*dim); return { data, dim }; }
+  const vec = out?.data ? out.data : Float32Array.from(out);
+  return { data: vec, dim: vec.length };
 }
-
 async function embedAllDocs(){
-  const B = 16;
-  const N = DOCS.length;
-  let dim = null;
-  const store = [];
-  const t0 = performance.now();
-  const prog = $('#prog'); prog.style.display='block'; prog.value = 0; prog.max = Math.ceil(N / B);
-
-  for(let i=0;i<N;i+=B){
-    const chunk = DOCS.slice(i, i+B).map(d=>d.text);
-    const { data, dim: d } = await embedBatch(chunk, $('#normalize').checked);
-    if(dim==null) dim = d;
-    store.push(data);
-    prog.value += 1;
-  }
-  const all = new Float32Array(store.reduce((s,a)=>s+a.length,0));
-  let off=0; for(const a of store){ all.set(a, off); off += a.length; }
-  D = dim; DOC_EMB = all;
-
-  $('#dim').textContent = String(D);
-  $('#t1').textContent = (performance.now()-t0).toFixed(1);
-  setPipe('#p1', `embedded ${N} docs`, 'good');
-  prog.style.display='none';
+  const B=16, N=DOCS.length; let dim=null; const store=[]; const t0=performance.now();
+  const prog=$('#prog'); prog.style.display='block'; prog.value=0; prog.max=Math.ceil(N/B);
+  for(let i=0;i<N;i+=B){ const chunk=DOCS.slice(i,i+B).map(d=>d.text); const {data,dim:d}=await embedBatch(chunk,$('#normalize').checked); if(dim==null) dim=d; store.push(data); prog.value+=1; }
+  const all=new Float32Array(store.reduce((s,a)=>s+a.length,0)); let off=0; for(const a of store){ all.set(a,off); off+=a.length; }
+  D=dim; DOC_EMB=all; $('#dim').textContent=String(D); $('#t1').textContent=(performance.now()-t0).toFixed(1); setPipe('#p1',`embedded ${N} docs`,'good'); prog.style.display='none';
 }
-
 async function embedOneQuery(qText){
-  const out = await extractor(qText, { pooling: 'mean', normalize: $('#normalize').checked });
-  let qv;
-  if(out?.data) qv = out.data;
-  else if(Array.isArray(out)) qv = Float32Array.from(out[0]);
-  else qv = Float32Array.from(out);
-  if(!$('#normalize').checked) normalizeVec(qv);
-  return qv;
+  const out = await extractor(qText, { pooling:'mean', normalize: $('#normalize').checked });
+  let qv; if(out?.data) qv=out.data; else if(Array.isArray(out)) qv=Float32Array.from(out[0]); else qv=Float32Array.from(out);
+  if(!$('#normalize').checked) normalizeVec(qv); return qv;
 }
 
-/* ---------------- UI ---------------- */
+/* ---------- UI ---------- */
 function fillQueries(){
-  const sel = $('#querySel');
-  sel.innerHTML = '';
-  QUERIES.forEach((q,i)=>{
-    const opt = document.createElement('option');
-    opt.value = String(i);
-    opt.textContent = q;
-    sel.appendChild(opt);
-  });
-  sel.disabled = false;
+  const sel=$('#querySel'); sel.innerHTML='';
+  QUERIES.forEach((q,i)=>{ const opt=document.createElement('option'); opt.value=String(i); opt.textContent=q; sel.appendChild(opt); });
+  sel.disabled=false;
 }
-
 function renderResults(items){
-  const res = $('#results'); res.innerHTML='';
-  $('#retCount').textContent = String(items.length);
-  const assembled = [];
+  const res=$('#results'); res.innerHTML=''; $('#retCount').textContent=String(items.length); const assembled=[];
   items.forEach(it=>{
-    const d = DOCS[it.idx];
-    const wrap = document.createElement('div'); wrap.className='chunk';
-    const bar = document.createElement('div'); bar.className='bar'; bar.title=String(it.score.toFixed(4));
-    const fill = document.createElement('i'); fill.style.width = `${Math.max(0, Math.min(1, it.score))*100}%`;
-    bar.appendChild(fill);
-    const header = document.createElement('div');
-    header.innerHTML = `<strong>#${it.rank}</strong> <span class="muted">doc</span> <code class="inline">${d.id}</code> <span class="score">score: ${it.score.toFixed(3)}</span><br><span class="muted small">${d.title || '(no title)'}</span>`;
-    const text = document.createElement('div'); text.className='small'; text.style.marginTop='6px';
-    const t = d.text; text.textContent = t.slice(0, 420) + (t.length>420 ? '…' : '');
-    wrap.appendChild(header); wrap.appendChild(bar); wrap.appendChild(text);
-    res.appendChild(wrap);
-    assembled.push(d.text);
+    const d=DOCS[it.idx]; const wrap=document.createElement('div'); wrap.className='chunk';
+    const bar=document.createElement('div'); bar.className='bar'; bar.title=String(it.score.toFixed(4));
+    const fill=document.createElement('i'); fill.style.width=`${Math.max(0,Math.min(1,it.score))*100}%`; bar.appendChild(fill);
+    const header=document.createElement('div');
+    header.innerHTML=`<strong>#${it.rank}</strong> <span class="muted">doc</span> <code class="inline">${d.id}</code> <span class="score">score: ${it.score.toFixed(3)}</span><br><span class="muted small">${d.title||'(no title)'}</span>`;
+    const text=document.createElement('div'); text.className='small'; text.style.marginTop='6px'; const t=d.text; text.textContent=t.slice(0,420)+(t.length>420?'…':'');
+    wrap.appendChild(header); wrap.appendChild(bar); wrap.appendChild(text); res.appendChild(wrap); assembled.push(d.text);
   });
-  $('#context').textContent = assembled.join('\n\n');
+  $('#context').textContent=assembled.join('\n\n');
 }
 
-/* ---------------- wiring ---------------- */
+/* ---------- wire buttons ---------- */
 $('#init').addEventListener('click', async ()=>{
   try{
-    const dsUrl = $('#dsUrl').value.trim();
-    const qUrl  = $('#qUrl').value.trim();
-
-    $('#status').textContent = 'fetching JSON…';
-    setPipe('#p0','fetching dataset & queries…','warn');
-    const t0 = performance.now();
+    const dsUrl=$('#dsUrl').value.trim(); const qUrl=$('#qUrl').value.trim();
+    $('#status').textContent='fetching JSON…'; setPipe('#p0','fetching dataset & queries…','warn');
     const [ds, qs] = await Promise.all([fetchJSON(dsUrl), fetchJSON(qUrl)]);
-
-    // dataset.json is a list of {id,title,text}
-    if(!Array.isArray(ds)) throw new Error('dataset.json must be a JSON array');
-    DOCS = ds.map((r,i)=>({ id: String(r.id ?? `row-${i}`), title: String(r.title ?? ''), text: String(r.text ?? '') }));
-    $('#ndocs').textContent = String(DOCS.length);
-
-    // queries.json can be list or {queries:[...]}
+    if(!Array.isArray(ds)) throw new Error('dataset.json must be a JSON array of {id,title,text}');
+    DOCS = ds.map((r,i)=>({ id:String(r.id??`row-${i}`), title:String(r.title??''), text:String(r.text??'') }));
     QUERIES = Array.isArray(qs) ? qs.slice() : (Array.isArray(qs.queries) ? qs.queries.slice() : []);
-    if(QUERIES.length === 0) throw new Error('queries.json is empty');
+    if(QUERIES.length===0) throw new Error('queries.json has no queries');
+    $('#ndocs').textContent=String(DOCS.length);
+    setPipe('#p0',`dataset: ${DOCS.length} • queries: ${QUERIES.length}`,'good');
 
-    $('#t0').textContent = (performance.now()-t0).toFixed(1);
-    setPipe('#p0', `dataset: ${DOCS.length} • queries: ${QUERIES.length}`, 'good');
-
-    $('#status').textContent = 'loading model…';
-    setPipe('#p1','loading model…','warn');
+    $('#status').textContent='loading model…'; setPipe('#p1','loading model…','warn');
     await loadModel();
 
-    $('#status').textContent = 'embedding docs…';
+    $('#status').textContent='embedding docs…';
     await embedAllDocs();
 
     fillQueries();
-    $('#model').disabled = false;
-    $('#run').disabled = false;
-    $('#status').textContent = 'ready';
-    setPipe('#p2','pick a query','warn');
+    $('#model').disabled=false; $('#run').disabled=false; $('#status').textContent='ready'; setPipe('#p2','pick a query','warn');
   }catch(e){
     console.error(e);
-    $('#status').textContent = 'failed: ' + e.message;
+    $('#status').textContent='failed: '+e.message;
     setPipe('#p0','failed','err'); setPipe('#p1','failed','err');
   }
 });
 
 $('#run').addEventListener('click', async ()=>{
   try{
-    const qi = +$('#querySel').value|0;
-    const qText = QUERIES[qi];
-    setPipe('#p2', `query #${qi+1}`, 'good');
-
-    const t0 = performance.now();
-    const qv = await embedOneQuery(qText);
-    $('#t2').textContent = (performance.now()-t0).toFixed(1);
-
-    const k = +$('#topk').value|0;
-    const items = cosineTopK(qv, k);
-    renderResults(items);
-    setPipe('#p3', `top-k=${k}`, 'good');
-    setPipe('#p4', 'assembled', 'good');
-  }catch(e){
-    console.error(e);
-    setPipe('#p3', 'failed', 'err');
-  }
+    const qi=+$('#querySel').value|0; const qText=QUERIES[qi]; setPipe('#p2',`query #${qi+1}`,'good');
+    const t0=performance.now(); const qv=await embedOneQuery(qText); $('#t2').textContent=(performance.now()-t0).toFixed(1);
+    const k=+$('#topk').value|0; const items=cosineTopK(qv,k); renderResults(items); setPipe('#p3',`top-k=${k}`,'good'); setPipe('#p4','assembled','good');
+  }catch(e){ console.error(e); setPipe('#p3','failed','err'); }
 });
 
-window.addEventListener('load', ()=>{
-  setPipe('#p0','idle','warn');
-  $('#status').textContent = 'idle';
-});
+window.addEventListener('load', ()=>{ setPipe('#p0','idle','warn'); $('#status').textContent='idle'; });
 </script>
 </body>
 </html>
