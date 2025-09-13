@@ -11,7 +11,7 @@
     .app{max-width:1100px;margin:0 auto;padding:16px}
     .row{display:flex;gap:12px;flex-wrap:wrap}
     .col{background:var(--panel);border:1px solid #1d2430;border-radius:10px;padding:12px;flex:1}
-    .col.sm{flex:0 0 320px}
+    .col.sm{flex:0 0 360px}
     label{display:block;margin:10px 0 6px;color:var(--muted)}
     input[type="range"]{width:100%}
     input[type="number"],textarea,select{width:100%;background:#0f141b;border:1px solid #222b39;color:var(--fg);border-radius:8px;padding:8px}
@@ -26,68 +26,71 @@
     .chunk .score{float:right;color:var(--muted)}
     code.inline{background:#0c1218;border:1px solid #1b2330;border-radius:6px;padding:2px 6px}
     .pipeline{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
-    .pipebox{background:#0e141b;border:1px solid #1f2837;border-radius:10px;padding:8px 10px;min-width:120px}
+    .pipebox{background:#0e141b;border:1px solid #1f2837;border-radius:10px;padding:8px 10px;min-width:140px}
     .pipebox.good{outline:2px solid var(--ok)}
     .arrow{color:var(--muted)}
     .grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
     @media (max-width:900px){.grid{grid-template-columns:1fr}}
     .small{font-size:12px}
-    .pill{background:#0f1b26;border:1px solid #243245;border-radius:999px;padding:2px 8px;margin-left:6px}
     .mono{font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, monospace}
     .hl{background:#1c2a3a}
     .footer{margin-top:8px;color:var(--muted)}
+    .pill{background:#0f1b26;border:1px solid #243245;border-radius:999px;padding:2px 8px;margin-left:6px}
   </style>
+  <!-- fflate for in-browser unzip (fast, tiny) -->
+  <script src="https://cdn.jsdelivr.net/npm/fflate@0.8.2/umd/index.min.js"></script>
 </head>
 <body>
 <div class="app">
-  <h1>🧩 Tiny RAG Visualizer (client-only)</h1>
+  <h1>🧩 Tiny RAG Visualizer (client-only, precomputed)</h1>
 
   <div class="row">
     <div class="col sm">
-      <label>Query</label>
-      <textarea id="query">What are the cognitive benefits of avocados?</textarea>
+      <label>Data pack</label>
+      <div style="display:flex; gap:8px">
+        <button class="btn" id="loadZip">Load vector_dbs.zip</button>
+        <input type="file" id="zipFile" accept=".zip" style="flex:1" />
+      </div>
+      <div class="small muted" id="status">Pack not loaded.</div>
+
+      <label>Model</label>
+      <select id="modelSel" disabled></select>
+
+      <label>Query <span class="pill small" id="qHint">select from list (precomputed)</span></label>
+      <select id="querySel" disabled></select>
+      <textarea id="query" placeholder="(Optional) Type your own — but only precomputed queries have vectors client-side"></textarea>
 
       <div class="grid">
         <div>
-          <label>Chunk size <span class="muted small">(chars)</span></label>
-          <input id="chunkSize" type="range" min="150" max="600" step="10" value="280"/>
-          <input id="chunkSizeNum" type="number" min="150" max="600" step="10" value="280"/>
-        </div>
-        <div>
-          <label>Overlap <span class="muted small">(chars)</span></label>
-          <input id="overlap" type="range" min="0" max="200" step="10" value="60"/>
-          <input id="overlapNum" type="number" min="0" max="200" step="10" value="60"/>
-        </div>
-        <div>
           <label>Top-k</label>
-          <input id="topk" type="range" min="1" max="6" step="1" value="3"/>
-          <input id="topkNum" type="number" min="1" max="6" step="1" value="3"/>
+          <input id="topk" type="range" min="1" max="12" step="1" value="6"/>
+          <input id="topkNum" type="number" min="1" max="12" step="1" value="6"/>
         </div>
         <div>
-          <label>Stop-words <span class="pill small" id="swCount">0</span></label>
-          <select id="stopwords">
-            <option value="en">English</option>
-            <option value="none">None</option>
+          <label>Context assembly</label>
+          <select id="contextMode">
+            <option value="snippets">Titles only</option>
+            <option value="full">Full text (needs docs_text.jsonl.gz)</option>
           </select>
         </div>
       </div>
 
       <div style="margin-top:10px;display:flex;gap:8px">
-        <button class="btn" id="run">Run</button>
-        <button class="btn" id="shuffle">Random query</button>
+        <button class="btn" id="run" disabled>Run</button>
       </div>
 
       <div class="footer small">
-        All in your browser. Retrieval uses TF-IDF + cosine. You can swap in a real vector API later.
+        100% client-side. Uses precomputed neighbors from <code class="inline">neighbors_topk.json</code>.
+        Optional doc texts via <code class="inline">docs_text.jsonl.gz</code>.
       </div>
     </div>
 
     <div class="col">
       <label>Pipeline</label>
       <div class="pipeline" id="pipeline">
-        <div class="pipebox" id="p1">Chunk<br><span class="muted small" id="p1meta">—</span></div>
+        <div class="pipebox" id="p1">Load Pack<br><span class="muted small" id="p1meta">—</span></div>
         <div class="arrow">➜</div>
-        <div class="pipebox" id="p2">Vectorize<br><span class="muted small" id="p2meta">—</span></div>
+        <div class="pipebox" id="p2">Select Model<br><span class="muted small" id="p2meta">—</span></div>
         <div class="arrow">➜</div>
         <div class="pipebox" id="p3">Retrieve<br><span class="muted small" id="p3meta">—</span></div>
         <div class="arrow">➜</div>
@@ -96,7 +99,7 @@
 
       <div class="grid" style="margin-top:10px">
         <div>
-          <label>Retrieved chunks <span class="muted small" id="retCount">0</span></label>
+          <label>Retrieved docs <span class="muted small" id="retCount">0</span></label>
           <div id="results"></div>
         </div>
         <div>
@@ -106,8 +109,8 @@
       </div>
 
       <div style="margin-top:10px">
-        <span class="badge">t_chunk: <span id="t1">—</span> ms</span>
-        <span class="badge">t_vectorize: <span id="t2">—</span> ms</span>
+        <span class="badge">t_load: <span id="t1">—</span> ms</span>
+        <span class="badge">t_select: <span id="t2">—</span> ms</span>
         <span class="badge">t_retrieve: <span id="t3">—</span> ms</span>
         <span class="badge">t_assemble: <span id="t4">—</span> ms</span>
       </div>
@@ -116,193 +119,240 @@
 </div>
 
 <script>
-/* ------------------------ tiny demo corpus ------------------------ */
-const CORPUS = [
-  { id:"doc1", title:"Avocados & Brain Health", text:`Avocados are rich in monounsaturated fats that support cardiovascular and brain health. Observational studies link diets higher in monounsaturated fatty acids to better cognitive performance. Avocados also contain vitamin K, folate, and lutein. While not a magic bullet, they complement overall dietary patterns like the Mediterranean diet.`},
-  { id:"doc2", title:"RAG Overview", text:`Retrieval-Augmented Generation (RAG) pairs a retriever with a generator. The retriever selects relevant chunks from a knowledge base using vector similarity; the generator conditions on those chunks to produce an answer. Trade-offs include chunk size, overlap, and top-k.`},
-  { id:"doc3", title:"Rainbow Optics", text:`A rainbow is formed by refraction, internal reflection, and dispersion of light in water droplets. Each color exits the droplet at a characteristic angle, producing the arc.`},
-  { id:"doc4", title:"Safety Note", text:`RAG quality depends on data coverage and chunking. Overly small chunks fragment context; overly large chunks reduce recall. Overlap helps preserve continuity across boundaries.`},
-  { id:"doc5", title:"Mini Story", text:`"You will pay for what you have done," she hissed, her blade flashing in the moonlight. The battle that ensued left the courtyard strewn with petals and rain.`},
-  { id:"doc6", title:"Personality Blurb", text:`People with avoidant tendencies may withdraw from close relationships due to fear of rejection; treatment is individualized and evidence-informed.`}
-];
+/* ------------------------ Config ------------------------ */
+const ZIP_URL = 'vector_dbs.zip'; // adjust if hosted elsewhere
 
-/* ------------------------ utilities ------------------------ */
-const STOPWORDS_EN = new Set(("a an the and or but for nor so to of in on at by from as is are was were be been being with without about above below into onto off over under between within during including until against through each other more most some such no not only own same very s t can will just don should now than then there here it its it’s their them they you your we our i me my this that these those what which who whom where when why how").split(/\s+/));
-
-const tokenize = (s, useStop=true) => {
-  return s.toLowerCase()
-    .replace(/['’]/g,"")                // drop apostrophes
-    .split(/[^a-z0-9]+/g)
-    .filter(w => w.length>1 && (!useStop || !STOPWORDS_EN.has(w)));
-};
-
-const chunkText = (text, size, overlap) => {
-  const chunks = [];
-  let i=0;
-  while(i < text.length){
-    const slice = text.slice(i, i+size).trim();
-    if(slice) chunks.push(slice);
-    i += Math.max(1, size - overlap);
-  }
-  return chunks;
-};
-
-const tf = tokens => {
-  const m = new Map();
-  tokens.forEach(t => m.set(t, (m.get(t)||0)+1));
-  return m;
-};
-
-const idf = (docs) => {
-  const df = new Map();
-  docs.forEach(d => {
-    const seen = new Set(d);
-    seen.forEach(t => df.set(t, (df.get(t)||0)+1));
-  });
-  const N = docs.length;
-  const idf = new Map();
-  df.forEach((c,t) => idf.set(t, Math.log((N+1)/(c+1))+1)); // smoothed IDF
-  return idf;
-};
-
-const tfidfVec = (tfMap, idfMap) => {
-  const v = new Map();
-  let norm=0;
-  tfMap.forEach((cnt, tok) => {
-    const w = (cnt) * (idfMap.get(tok) || 0);
-    v.set(tok, w); norm += w*w;
-  });
-  const scale = norm ? 1/Math.sqrt(norm) : 0;
-  if(scale) v.forEach((w,k)=>v.set(k, w*scale));
-  return v;
-};
-
-const cosine = (a,b) => {
-  // a,b are Map token->weight, both L2-normalized
-  let s=0;
-  if(a.size > b.size) [a,b]=[b,a];
-  a.forEach((wa, tok) => { const wb=b.get(tok); if(wb) s += wa*wb; });
-  return s;
-};
-
-const highlight = (text, queryTerms) => {
-  // very light highlighter for query terms
-  const rx = new RegExp("\\b(" + queryTerms.map(t=>t.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')).join("|") + ")\\b","gi");
-  return text.replace(rx, m=>`<mark class="hl">${m}</mark>`);
-};
-
-/* ------------------------ main run ------------------------ */
+/* ------------------------ UI helpers ------------------------ */
 const $ = s => document.querySelector(s);
-const $$ = s => document.querySelectorAll(s);
-
 const syncPair = (range, num) => {
-  range.addEventListener('input', ()=>{ num.value = range.value; });
-  num.addEventListener('input', ()=>{ range.value = num.value; });
+  range.addEventListener('input', () => { num.value = range.value; });
+  num.addEventListener('input', () => { range.value = num.value; });
 };
-
-syncPair($('#chunkSize'), $('#chunkSizeNum'));
-syncPair($('#overlap'), $('#overlapNum'));
 syncPair($('#topk'), $('#topkNum'));
 
-const randomQueries = [
-  "What is RAG in simple terms?",
-  "Trade-offs between chunk size and overlap?",
-  "Why might top-k hurt latency?",
-  "How do avocados relate to cognition?",
-  "What forms a rainbow?"
-];
-
-$('#shuffle').addEventListener('click', ()=>{
-  $('#query').value = randomQueries[Math.floor(Math.random()*randomQueries.length)];
-  run();
-});
-
-$('#stopwords').addEventListener('change', ()=>{
-  $('#swCount').textContent = $('#stopwords').value==='en' ? STOPWORDS_EN.size : 0;
-});
-
-window.addEventListener('load', ()=>{
-  $('#swCount').textContent = STOPWORDS_EN.size;
-  run();
-});
-$('#run').addEventListener('click', run);
-
-function setPipe(elId, meta, ok=false){
-  const el = $(elId);
+function setPipe(id, meta, ok=false){
+  const el = $(id);
   el.classList.toggle('good', ok);
-  $(elId+'meta').textContent = meta;
+  $(id+'meta').textContent = meta;
 }
 
-function run(){
-  const t0 = performance.now();
-  const chunkSize = +$('#chunkSize').value|0;
-  const overlap   = +$('#overlap').value|0;
-  const topk      = +$('#topk').value|0;
-  const useStop   = $('#stopwords').value==='en';
+/* ------------------------ Unzip + FS ------------------------ */
+let ZIPFS = null; // { path -> Uint8Array }
 
-  // 1) Chunk
-  const allChunks = [];
-  CORPUS.forEach(doc=>{
-    const chunks = chunkText(doc.text, chunkSize, overlap).map((c,i)=>({docId:doc.id, title:doc.title, idx:i, text:c}));
-    allChunks.push(...chunks);
+async function fetchZip(url){
+  const t0 = performance.now();
+  $('#status').textContent = `Fetching ${url} …`;
+  const res = await fetch(url);
+  if(!res.ok) throw new Error(`HTTP ${res.status}`);
+  const buf = await res.arrayBuffer();
+  $('#status').textContent = `Unzipping …`;
+  const files = fflate.unzipSync(new Uint8Array(buf)); // {name: Uint8Array}
+  const t1 = performance.now();
+  ZIPFS = files;
+  $('#status').textContent = `Pack ready (${Object.keys(files).length} files).`;
+  setPipe('#p1', 'zip loaded', true);
+  $('#t1').textContent = (t1 - t0).toFixed(1);
+}
+
+function readText(path){
+  const u8 = ZIPFS[path];
+  if(!u8) throw new Error(`Missing in zip: ${path}`);
+  return new TextDecoder('utf-8').decode(u8);
+}
+
+function readJSON(path){
+  return JSON.parse(readText(path));
+}
+
+function readMaybe(path){ // returns Uint8Array or null
+  return ZIPFS[path] || null;
+}
+
+/* ------------------------ State ------------------------ */
+let ROOT = null;           // vector_dbs/manifest.json
+let MODELS = [];           // from ROOT.items
+let CURRENT = null;        // { manWeb, queries, docsMeta, neighbors, docsTextLUT? }
+let CURRENT_MODEL_FOLDER = null;
+
+/* ------------------------ Load root manifest ------------------------ */
+function populateModels(){
+  const sel = $('#modelSel');
+  sel.innerHTML = '';
+  MODELS.forEach(item=>{
+    const opt = document.createElement('option');
+    opt.value = item.folder;
+    opt.textContent = `${item.model_id || item.folder}`;
+    sel.appendChild(opt);
   });
+  sel.disabled = MODELS.length===0;
+}
+
+function populateQueries(qs){
+  const sel = $('#querySel');
+  sel.innerHTML = '';
+  qs.forEach((q,i)=>{
+    const opt = document.createElement('option');
+    opt.value = String(i);
+    opt.textContent = q;
+    sel.appendChild(opt);
+  });
+  sel.disabled = qs.length===0;
+}
+
+/* ------------------------ Load a model pack ------------------------ */
+function pathJoin(...parts){
+  return parts.join('/').replace(/\/+/g,'/');
+}
+
+function tryLoadDocsText(modelFolder){
+  // Optional: web/docs_text.jsonl.gz (one JSON per line: {id,title,text})
+  const gzPath = pathJoin('vector_dbs', modelFolder, 'web/docs_text.jsonl.gz');
+  const raw = readMaybe(gzPath);
+  if(!raw) return null;
+  // gunzip
+  const unz = fflate.decompressSync(raw);
+  const txt = new TextDecoder('utf-8').decode(unz);
+  const lut = {};
+  txt.split(/\r?\n/).forEach(line=>{
+    if(!line.trim()) return;
+    try {
+      const o = JSON.parse(line);
+      lut[o.id] = o;
+    } catch(e){}
+  });
+  return lut; // { id -> {id,title,text} }
+}
+
+function selectModel(modelFolder){
+  const t0 = performance.now();
+  CURRENT_MODEL_FOLDER = modelFolder;
+  const base = pathJoin('vector_dbs', modelFolder, 'web');
+  const manWeb = readJSON(pathJoin(base, 'manifest-web.json'));
+  const queries = readJSON(pathJoin(base, 'queries.json'));
+  const docsMeta = readJSON(pathJoin(base, 'docs_meta.json'));
+  const neighbors = readJSON(pathJoin(base, 'neighbors_topk.json'));
+  const docsTextLUT = tryLoadDocsText(modelFolder); // optional
+
+  CURRENT = { manWeb, queries, docsMeta, neighbors, docsTextLUT };
+  populateQueries(queries);
+
+  const t1 = performance.now();
+  setPipe('#p2', `${modelFolder}`, true);
+  $('#t2').textContent = (t1 - t0).toFixed(1);
+  $('#run').disabled = false;
+}
+
+/* ------------------------ Retrieval (precomputed) ------------------------ */
+function run(){
+  if(!CURRENT){ alert('Load pack and select a model first.'); return; }
+  const topk = Math.max(1, +$('#topk').value|0);
+  const qSel = $('#querySel');
+  const qIdx = qSel.selectedIndex >= 0 ? qSel.selectedIndex : 0;
+  const qText = CURRENT.queries[qIdx] || '';
+  $('#query').value = qText; // reflect in textarea
+
+  const t0 = performance.now();
+  const entry = CURRENT.neighbors[qIdx]; // { query, topk: [{doc_index, doc_id, title, score}, ...] }
+  const items = (entry?.topk || []).slice(0, topk);
   const t1 = performance.now();
 
-  // 2) Vectorize (TF-IDF)
-  const chunkTokens = allChunks.map(c => tokenize(c.text, useStop));
-  const idfMap = idf(chunkTokens);
-  const chunkVecs = chunkTokens.map(toks => tfidfVec(tf(toks), idfMap));
-  const query = $('#query').value.trim();
-  const qTokens = tokenize(query, useStop);
-  const qVec = tfidfVec(tf(qTokens), idfMap);
-  const t2 = performance.now();
-
-  // 3) Retrieve
-  const scored = chunkVecs.map((v,i)=>({i, score: cosine(qVec, v)}))
-    .sort((a,b)=>b.score-a.score)
-    .slice(0, Math.min(topk, chunkVecs.length));
-  const t3 = performance.now();
-
-  // 4) Assemble
-  const context = scored.map(s => allChunks[s.i].text).join("\n\n");
-  const t4 = performance.now();
-
-  // Update pipeline UI
-  setPipe('#p1', `${allChunks.length} chunks @ ${chunkSize}/${overlap}`, true);
-  setPipe('#p2', `|V|=${idfMap.size} terms`, true);
-  setPipe('#p3', `top-k=${topk}`, true);
-  setPipe('#p4', `${context.length} chars`, true);
-  $('#t1').textContent = (t1 - t0).toFixed(1);
-  $('#t2').textContent = (t2 - t1).toFixed(1);
-  $('#t3').textContent = (t3 - t2).toFixed(1);
-  $('#t4').textContent = (t4 - t3).toFixed(1);
-
-  // Render results
-  const qTerms = Array.from(new Set(qTokens));
+  // Render results list
   const container = $('#results');
   container.innerHTML = '';
-  $('#retCount').textContent = String(scored.length);
+  $('#retCount').textContent = String(items.length);
 
-  scored.forEach(({i, score}, rank)=>{
-    const c = allChunks[i];
+  items.forEach((it, rank)=>{
     const wrap = document.createElement('div');
     wrap.className = 'chunk';
     const header = document.createElement('div');
-    header.innerHTML = `<strong>#${rank+1}</strong> <span class="muted">from</span> <code class="inline">${c.title}</code> <span class="score">score: ${score.toFixed(3)}</span>`;
-    const bar = document.createElement('div'); bar.className = 'bar'; bar.title = String(score.toFixed(4));
-    const fill = document.createElement('i'); fill.style.width = `${Math.max(0, Math.min(1, score))*100}%`;
+    header.innerHTML = `<strong>#${rank+1}</strong> <span class="muted">doc</span> <code class="inline">${it.doc_id}</code> `
+      + `<span class="muted">title</span> <code class="inline">${(it.title||'').replace(/</g,'&lt;')}</code>`
+      + ` <span class="score">score: ${it.score.toFixed(3)}</span>`;
+    const bar = document.createElement('div'); bar.className = 'bar'; bar.title = String(it.score.toFixed(4));
+    const fill = document.createElement('i'); fill.style.width = `${Math.max(0, Math.min(1, it.score))*100}%`;
     bar.appendChild(fill);
-    const text = document.createElement('div');
-    text.className = 'small'; text.style.marginTop = '6px';
-    text.innerHTML = highlight(c.text, qTerms);
     wrap.appendChild(header);
     wrap.appendChild(bar);
-    wrap.appendChild(text);
     container.appendChild(wrap);
   });
 
+  // Assemble context (if docs_text available)
+  const t2 = performance.now();
+  let context = '';
+  if($('#contextMode').value === 'full' && CURRENT.docsTextLUT){
+    items.forEach((it, idx)=>{
+      const row = CURRENT.docsTextLUT[it.doc_id];
+      if(row && row.text){
+        context += `#${idx+1} — ${row.title||it.doc_id}\n${row.text}\n\n`;
+      } else {
+        context += `#${idx+1} — ${it.title||it.doc_id}\n(text not included in pack)\n\n`;
+      }
+    });
+  } else {
+    context = items.map((it, idx)=> `#${idx+1} — ${it.title||it.doc_id}`).join('\n');
+    if($('#contextMode').value === 'full') context += `\n\n(no docs_text.jsonl.gz found in pack)`;
+  }
+  const t3 = performance.now();
+
   $('#context').textContent = context || '(no results)';
+  setPipe('#p3', `top-k=${topk}`, true);
+  setPipe('#p4', `${context.length} chars`, true);
+  $('#t3').textContent = (t1 - t0).toFixed(1);
+  $('#t4').textContent = (t3 - t2).toFixed(1);
 }
+
+/* ------------------------ Wire up ------------------------ */
+$('#loadZip').addEventListener('click', async ()=>{
+  try {
+    await fetchZip(ZIP_URL);
+    ROOT = readJSON('vector_dbs/manifest.json');
+    MODELS = ROOT.items || [];
+    populateModels();
+    $('#modelSel').disabled = false;
+    $('#status').textContent += ' | Manifest loaded.';
+  } catch(e){
+    console.error(e);
+    $('#status').textContent = 'Failed to load zip. You can choose a local file below.';
+  }
+});
+
+$('#zipFile').addEventListener('change', async (e)=>{
+  const file = e.target.files?.[0];
+  if(!file) return;
+  const t0 = performance.now();
+  $('#status').textContent = `Reading ${file.name} …`;
+  const buf = await file.arrayBuffer();
+  $('#status').textContent = `Unzipping …`;
+  ZIPFS = fflate.unzipSync(new Uint8Array(buf));
+  const t1 = performance.now();
+  ROOT = readJSON('vector_dbs/manifest.json');
+  MODELS = ROOT.items || [];
+  populateModels();
+  $('#modelSel').disabled = false;
+  setPipe('#p1', 'zip (local) loaded', true);
+  $('#t1').textContent = (t1 - t0).toFixed(1);
+  $('#status').textContent = `Pack ready (local).`;
+});
+
+$('#modelSel').addEventListener('change', ()=>{
+  const folder = $('#modelSel').value;
+  selectModel(folder);
+});
+
+$('#querySel').addEventListener('change', ()=>{
+  // keep textarea synced for clarity
+  const idx = $('#querySel').selectedIndex;
+  $('#query').value = CURRENT?.queries?.[idx] || '';
+});
+
+$('#run').addEventListener('click', run);
+
+// Initialize UI
+window.addEventListener('load', ()=>{
+  $('#query').value = '';
+  $('#retCount').textContent = '0';
+  setPipe('#p1','—',false); setPipe('#p2','—',false); setPipe('#p3','—',false); setPipe('#p4','—',false);
+});
 </script>
 </body>
 </html>
