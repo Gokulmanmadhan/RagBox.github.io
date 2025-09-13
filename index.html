@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <title>Tiny RAG Visualizer — Client-side Embeddings (Drive-backed)</title>
+  <title>Tiny RAG Visualizer — Client-side Embeddings (HF JSON + ESM)</title>
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <style>
     :root { --bg:#0b0d10; --panel:#12161b; --muted:#8a96a3; --fg:#e8eef5; --acc:#69b6ff; --ok:#5bd68a; --warn:#ffb15a; --err:#ff6b6b; }
@@ -37,19 +37,17 @@
     .footer{margin-top:8px;color:var(--muted)}
     progress{width:100%}
   </style>
-  <!-- Transformers.js -->
-  <script src="https://cdn.jsdelivr.net/npm/@xenova/transformers@2.17.2"></script>
 </head>
 <body>
 <div class="app">
-  <h1>🧩 Tiny RAG Visualizer — <span class="muted">client-side embeddings from Google Drive</span></h1>
+  <h1>🧩 Tiny RAG Visualizer — <span class="muted">client-side embeddings from Hugging Face</span></h1>
 
   <div class="row">
     <div class="col sm">
-      <label>dataset.json (Drive directDownload)</label>
-      <input id="dsUrl" type="text" value="https://drive.google.com/uc?export=download&id=1u5YBq6qxQC1G4JgF4VXAUxCo-1r5YSul" />
-      <label>queries.json (Drive directDownload)</label>
-      <input id="qUrl" type="text" value="https://drive.google.com/uc?export=download&id=1gDUxkQN64yfvphcufeI_VAgIVp7bryUF" />
+      <label>dataset.json (Hugging Face)</label>
+      <input id="dsUrl" type="text" value="https://huggingface.co/datasets/3rd-Degree-Burn/RAG/resolve/main/dataset.json" />
+      <label>queries.json (Hugging Face)</label>
+      <input id="qUrl" type="text" value="https://huggingface.co/datasets/3rd-Degree-Burn/RAG/resolve/main/queries.json" />
 
       <div style="margin-top:8px;display:flex;gap:8px;align-items:center">
         <button class="btn" id="init">Load & Embed</button>
@@ -64,7 +62,7 @@
         <option value="Xenova/all-MiniLM-L6-v2">Xenova/all-MiniLM-L6-v2 (quantized)</option>
       </select>
 
-      <label>Query (from Drive)</label>
+      <label>Query</label>
       <select id="querySel" disabled></select>
 
       <div class="grid">
@@ -88,7 +86,7 @@
       </div>
 
       <div class="footer small">
-        Loads JSONs from Drive (public), embeds with <code class="inline">Transformers.js</code>.
+        Loads JSON from Hugging Face (public), embeds with <code class="inline">Transformers.js</code>.
       </div>
     </div>
 
@@ -131,8 +129,13 @@
   </div>
 </div>
 
-<script>
-/* ---------- tiny helpers ---------- */
+<!-- All logic runs as an ES module to avoid relying on window.transformers -->
+<script type="module">
+import { pipeline, env } from 'https://cdn.jsdelivr.net/npm/@xenova/transformers@2.17.2';
+
+// (Optional) tighten env if you want to avoid remote model caching in IndexedDB across origins
+env.allowLocalModels = false;
+
 const $ = s => document.querySelector(s);
 const syncPair=(range,num)=>{range.addEventListener('input',()=>num.value=range.value);num.addEventListener('input',()=>range.value=num.value);};
 syncPair($('#topk'), $('#topkNum'));
@@ -143,31 +146,31 @@ let DOCS = [];         // [{id,title,text}]
 let QUERIES = [];      // [string]
 let DOC_EMB = null;    // Float32Array length=N*D
 let D = 0;             // embedding dim
-let extractor = null;  // transformers.js pipeline
+let extractor = null;  // Transformers.js pipeline instance
 
-/* ---------- robust Drive JSON fetch (with CORS fallback) ---------- */
+/* ---------- fetch from HF (with CORS-friendly fallback) ---------- */
 async function fetchText(url) {
-  // First try direct
+  // try direct
   try {
-    const res = await fetch(url, { method:'GET' });
-    if (res.ok) return await res.text();
-  } catch (e) { /* fall through */ }
-  // Fallback via read-only proxy with CORS enabled
+    const r = await fetch(url, { method:'GET' });
+    if (r.ok) return await r.text();
+  } catch (_) {}
+  // fallback via r.jina.ai mirror if needed
   const proxied = 'https://r.jina.ai/' + (url.startsWith('http') ? url : ('https://' + url.replace(/^\/+/,'')));
-  const r2 = await fetch(proxied, { method:'GET' });
-  if (!r2.ok) throw new Error(`Drive/Proxy fetch failed: ${r2.status}`);
+  const r2 = await fetch(proxied);
+  if (!r2.ok) throw new Error(`Fetch failed: ${r2.status}`);
   return await r2.text();
 }
-async function fetchJSON(url) {
+async function fetchJSON(url){
   const t0 = performance.now();
   const txt = await fetchText(url);
   let js;
-  try { js = JSON.parse(txt); } catch(e){ throw new Error('Invalid JSON from Drive'); }
+  try { js = JSON.parse(txt); } catch (e) { throw new Error('Invalid JSON'); }
   $('#t0').textContent = (performance.now()-t0).toFixed(1);
   return js;
 }
 
-/* ---------- math utils ---------- */
+/* ---------- math ---------- */
 function normalizeVec(v){ let s=0; for(let i=0;i<v.length;i++) s+=v[i]*v[i]; const n=Math.sqrt(s)||1; for(let i=0;i<v.length;i++) v[i]/=n; return v; }
 function cosineTopK(q, topk){
   const N=DOCS.length, dim=D; const scores=new Array(N); const t0=performance.now();
@@ -178,7 +181,6 @@ function cosineTopK(q, topk){
 
 /* ---------- embeddings ---------- */
 async function loadModel(){
-  const { pipeline } = window.transformers;
   extractor = await pipeline('feature-extraction', 'Xenova/all-MiniLM-L6-v2', { quantized:true });
 }
 async function embedBatch(texts, normalize){
@@ -191,14 +193,23 @@ async function embedBatch(texts, normalize){
 async function embedAllDocs(){
   const B=16, N=DOCS.length; let dim=null; const store=[]; const t0=performance.now();
   const prog=$('#prog'); prog.style.display='block'; prog.value=0; prog.max=Math.ceil(N/B);
-  for(let i=0;i<N;i+=B){ const chunk=DOCS.slice(i,i+B).map(d=>d.text); const {data,dim:d}=await embedBatch(chunk,$('#normalize').checked); if(dim==null) dim=d; store.push(data); prog.value+=1; }
-  const all=new Float32Array(store.reduce((s,a)=>s+a.length,0)); let off=0; for(const a of store){ all.set(a,off); off+=a.length; }
-  D=dim; DOC_EMB=all; $('#dim').textContent=String(D); $('#t1').textContent=(performance.now()-t0).toFixed(1); setPipe('#p1',`embedded ${N} docs`,'good'); prog.style.display='none';
+  for(let i=0;i<N;i+=B){
+    const chunk=DOCS.slice(i,i+B).map(d=>d.text);
+    const { data, dim:d } = await embedBatch(chunk, $('#normalize').checked);
+    if(dim==null) dim=d;
+    store.push(data);
+    prog.value+=1;
+  }
+  const all=new Float32Array(store.reduce((s,a)=>s+a.length,0));
+  let off=0; for(const a of store){ all.set(a,off); off+=a.length; }
+  D=dim; DOC_EMB=all; $('#dim').textContent=String(D); $('#t1').textContent=(performance.now()-t0).toFixed(1);
+  setPipe('#p1',`embedded ${N} docs`,'good'); prog.style.display='none';
 }
 async function embedOneQuery(qText){
   const out = await extractor(qText, { pooling:'mean', normalize: $('#normalize').checked });
   let qv; if(out?.data) qv=out.data; else if(Array.isArray(out)) qv=Float32Array.from(out[0]); else qv=Float32Array.from(out);
-  if(!$('#normalize').checked) normalizeVec(qv); return qv;
+  if(!$('#normalize').checked) normalizeVec(qv);
+  return qv;
 }
 
 /* ---------- UI ---------- */
@@ -221,13 +232,13 @@ function renderResults(items){
   $('#context').textContent=assembled.join('\n\n');
 }
 
-/* ---------- wire buttons ---------- */
+/* ---------- wiring ---------- */
 $('#init').addEventListener('click', async ()=>{
   try{
     const dsUrl=$('#dsUrl').value.trim(); const qUrl=$('#qUrl').value.trim();
     $('#status').textContent='fetching JSON…'; setPipe('#p0','fetching dataset & queries…','warn');
     const [ds, qs] = await Promise.all([fetchJSON(dsUrl), fetchJSON(qUrl)]);
-    if(!Array.isArray(ds)) throw new Error('dataset.json must be a JSON array of {id,title,text}');
+    if(!Array.isArray(ds)) throw new Error('dataset.json must be an array of {id,title,text}');
     DOCS = ds.map((r,i)=>({ id:String(r.id??`row-${i}`), title:String(r.title??''), text:String(r.text??'') }));
     QUERIES = Array.isArray(qs) ? qs.slice() : (Array.isArray(qs.queries) ? qs.queries.slice() : []);
     if(QUERIES.length===0) throw new Error('queries.json has no queries');
