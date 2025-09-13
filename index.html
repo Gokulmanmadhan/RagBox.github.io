@@ -1,18 +1,308 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
-
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Grid Background Design</title>
-    <link rel="stylesheet" href="styles.css">
+  <meta charset="utf-8" />
+  <title>Tiny RAG Visualizer (Pure HTML/CSS/JS)</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <style>
+    :root { --bg:#0b0d10; --panel:#12161b; --muted:#8a96a3; --fg:#e8eef5; --acc:#69b6ff; --ok:#5bd68a; --warn:#ffb15a; }
+    *{box-sizing:border-box} body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.45 ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,Arial}
+    h1{font-size:18px;margin:16px 0}
+    .app{max-width:1100px;margin:0 auto;padding:16px}
+    .row{display:flex;gap:12px;flex-wrap:wrap}
+    .col{background:var(--panel);border:1px solid #1d2430;border-radius:10px;padding:12px;flex:1}
+    .col.sm{flex:0 0 320px}
+    label{display:block;margin:10px 0 6px;color:var(--muted)}
+    input[type="range"]{width:100%}
+    input[type="number"],textarea,select{width:100%;background:#0f141b;border:1px solid #222b39;color:var(--fg);border-radius:8px;padding:8px}
+    textarea{min-height:70px;resize:vertical}
+    .btn{background:#1b2532;border:1px solid #2a374a;color:var(--fg);padding:8px 10px;border-radius:8px;cursor:pointer}
+    .btn:active{transform:translateY(1px)}
+    .muted{color:var(--muted)}
+    .bar{height:8px;background:#233044;border-radius:999px;overflow:hidden}
+    .bar>i{display:block;height:100%;background:var(--acc)}
+    .badge{display:inline-block;padding:2px 8px;border-radius:999px;background:#0f1620;border:1px solid #263248;margin-right:6px}
+    .chunk{background:#0e131a;border:1px solid #1a2230;border-radius:8px;padding:8px;margin:8px 0}
+    .chunk .score{float:right;color:var(--muted)}
+    code.inline{background:#0c1218;border:1px solid #1b2330;border-radius:6px;padding:2px 6px}
+    .pipeline{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+    .pipebox{background:#0e141b;border:1px solid #1f2837;border-radius:10px;padding:8px 10px;min-width:120px}
+    .pipebox.good{outline:2px solid var(--ok)}
+    .arrow{color:var(--muted)}
+    .grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
+    @media (max-width:900px){.grid{grid-template-columns:1fr}}
+    .small{font-size:12px}
+    .pill{background:#0f1b26;border:1px solid #243245;border-radius:999px;padding:2px 8px;margin-left:6px}
+    .mono{font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, monospace}
+    .hl{background:#1c2a3a}
+    .footer{margin-top:8px;color:var(--muted)}
+  </style>
 </head>
-
 <body>
-    <div class="container">
-        <h1>Welcome</h1>
-        <p>abcabcabcabcabcabcabcabcabcabc</p>
-    </div>
-</body>
+<div class="app">
+  <h1>🧩 Tiny RAG Visualizer (client-only)</h1>
 
+  <div class="row">
+    <div class="col sm">
+      <label>Query</label>
+      <textarea id="query">What are the cognitive benefits of avocados?</textarea>
+
+      <div class="grid">
+        <div>
+          <label>Chunk size <span class="muted small">(chars)</span></label>
+          <input id="chunkSize" type="range" min="150" max="600" step="10" value="280"/>
+          <input id="chunkSizeNum" type="number" min="150" max="600" step="10" value="280"/>
+        </div>
+        <div>
+          <label>Overlap <span class="muted small">(chars)</span></label>
+          <input id="overlap" type="range" min="0" max="200" step="10" value="60"/>
+          <input id="overlapNum" type="number" min="0" max="200" step="10" value="60"/>
+        </div>
+        <div>
+          <label>Top-k</label>
+          <input id="topk" type="range" min="1" max="6" step="1" value="3"/>
+          <input id="topkNum" type="number" min="1" max="6" step="1" value="3"/>
+        </div>
+        <div>
+          <label>Stop-words <span class="pill small" id="swCount">0</span></label>
+          <select id="stopwords">
+            <option value="en">English</option>
+            <option value="none">None</option>
+          </select>
+        </div>
+      </div>
+
+      <div style="margin-top:10px;display:flex;gap:8px">
+        <button class="btn" id="run">Run</button>
+        <button class="btn" id="shuffle">Random query</button>
+      </div>
+
+      <div class="footer small">
+        All in your browser. Retrieval uses TF-IDF + cosine. You can swap in a real vector API later.
+      </div>
+    </div>
+
+    <div class="col">
+      <label>Pipeline</label>
+      <div class="pipeline" id="pipeline">
+        <div class="pipebox" id="p1">Chunk<br><span class="muted small" id="p1meta">—</span></div>
+        <div class="arrow">➜</div>
+        <div class="pipebox" id="p2">Vectorize<br><span class="muted small" id="p2meta">—</span></div>
+        <div class="arrow">➜</div>
+        <div class="pipebox" id="p3">Retrieve<br><span class="muted small" id="p3meta">—</span></div>
+        <div class="arrow">➜</div>
+        <div class="pipebox" id="p4">Assemble<br><span class="muted small" id="p4meta">—</span></div>
+      </div>
+
+      <div class="grid" style="margin-top:10px">
+        <div>
+          <label>Retrieved chunks <span class="muted small" id="retCount">0</span></label>
+          <div id="results"></div>
+        </div>
+        <div>
+          <label>Assembled Context</label>
+          <div class="chunk mono small" id="context" style="white-space:pre-wrap; max-height:320px; overflow:auto"></div>
+        </div>
+      </div>
+
+      <div style="margin-top:10px">
+        <span class="badge">t_chunk: <span id="t1">—</span> ms</span>
+        <span class="badge">t_vectorize: <span id="t2">—</span> ms</span>
+        <span class="badge">t_retrieve: <span id="t3">—</span> ms</span>
+        <span class="badge">t_assemble: <span id="t4">—</span> ms</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+/* ------------------------ tiny demo corpus ------------------------ */
+const CORPUS = [
+  { id:"doc1", title:"Avocados & Brain Health", text:`Avocados are rich in monounsaturated fats that support cardiovascular and brain health. Observational studies link diets higher in monounsaturated fatty acids to better cognitive performance. Avocados also contain vitamin K, folate, and lutein. While not a magic bullet, they complement overall dietary patterns like the Mediterranean diet.`},
+  { id:"doc2", title:"RAG Overview", text:`Retrieval-Augmented Generation (RAG) pairs a retriever with a generator. The retriever selects relevant chunks from a knowledge base using vector similarity; the generator conditions on those chunks to produce an answer. Trade-offs include chunk size, overlap, and top-k.`},
+  { id:"doc3", title:"Rainbow Optics", text:`A rainbow is formed by refraction, internal reflection, and dispersion of light in water droplets. Each color exits the droplet at a characteristic angle, producing the arc.`},
+  { id:"doc4", title:"Safety Note", text:`RAG quality depends on data coverage and chunking. Overly small chunks fragment context; overly large chunks reduce recall. Overlap helps preserve continuity across boundaries.`},
+  { id:"doc5", title:"Mini Story", text:`"You will pay for what you have done," she hissed, her blade flashing in the moonlight. The battle that ensued left the courtyard strewn with petals and rain.`},
+  { id:"doc6", title:"Personality Blurb", text:`People with avoidant tendencies may withdraw from close relationships due to fear of rejection; treatment is individualized and evidence-informed.`}
+];
+
+/* ------------------------ utilities ------------------------ */
+const STOPWORDS_EN = new Set(("a an the and or but for nor so to of in on at by from as is are was were be been being with without about above below into onto off over under between within during including until against through each other more most some such no not only own same very s t can will just don should now than then there here it its it’s their them they you your we our i me my this that these those what which who whom where when why how").split(/\s+/));
+
+const tokenize = (s, useStop=true) => {
+  return s.toLowerCase()
+    .replace(/['’]/g,"")                // drop apostrophes
+    .split(/[^a-z0-9]+/g)
+    .filter(w => w.length>1 && (!useStop || !STOPWORDS_EN.has(w)));
+};
+
+const chunkText = (text, size, overlap) => {
+  const chunks = [];
+  let i=0;
+  while(i < text.length){
+    const slice = text.slice(i, i+size).trim();
+    if(slice) chunks.push(slice);
+    i += Math.max(1, size - overlap);
+  }
+  return chunks;
+};
+
+const tf = tokens => {
+  const m = new Map();
+  tokens.forEach(t => m.set(t, (m.get(t)||0)+1));
+  return m;
+};
+
+const idf = (docs) => {
+  const df = new Map();
+  docs.forEach(d => {
+    const seen = new Set(d);
+    seen.forEach(t => df.set(t, (df.get(t)||0)+1));
+  });
+  const N = docs.length;
+  const idf = new Map();
+  df.forEach((c,t) => idf.set(t, Math.log((N+1)/(c+1))+1)); // smoothed IDF
+  return idf;
+};
+
+const tfidfVec = (tfMap, idfMap) => {
+  const v = new Map();
+  let norm=0;
+  tfMap.forEach((cnt, tok) => {
+    const w = (cnt) * (idfMap.get(tok) || 0);
+    v.set(tok, w); norm += w*w;
+  });
+  const scale = norm ? 1/Math.sqrt(norm) : 0;
+  if(scale) v.forEach((w,k)=>v.set(k, w*scale));
+  return v;
+};
+
+const cosine = (a,b) => {
+  // a,b are Map token->weight, both L2-normalized
+  let s=0;
+  if(a.size > b.size) [a,b]=[b,a];
+  a.forEach((wa, tok) => { const wb=b.get(tok); if(wb) s += wa*wb; });
+  return s;
+};
+
+const highlight = (text, queryTerms) => {
+  // very light highlighter for query terms
+  const rx = new RegExp("\\b(" + queryTerms.map(t=>t.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')).join("|") + ")\\b","gi");
+  return text.replace(rx, m=>`<mark class="hl">${m}</mark>`);
+};
+
+/* ------------------------ main run ------------------------ */
+const $ = s => document.querySelector(s);
+const $$ = s => document.querySelectorAll(s);
+
+const syncPair = (range, num) => {
+  range.addEventListener('input', ()=>{ num.value = range.value; });
+  num.addEventListener('input', ()=>{ range.value = num.value; });
+};
+
+syncPair($('#chunkSize'), $('#chunkSizeNum'));
+syncPair($('#overlap'), $('#overlapNum'));
+syncPair($('#topk'), $('#topkNum'));
+
+const randomQueries = [
+  "What is RAG in simple terms?",
+  "Trade-offs between chunk size and overlap?",
+  "Why might top-k hurt latency?",
+  "How do avocados relate to cognition?",
+  "What forms a rainbow?"
+];
+
+$('#shuffle').addEventListener('click', ()=>{
+  $('#query').value = randomQueries[Math.floor(Math.random()*randomQueries.length)];
+  run();
+});
+
+$('#stopwords').addEventListener('change', ()=>{
+  $('#swCount').textContent = $('#stopwords').value==='en' ? STOPWORDS_EN.size : 0;
+});
+
+window.addEventListener('load', ()=>{
+  $('#swCount').textContent = STOPWORDS_EN.size;
+  run();
+});
+$('#run').addEventListener('click', run);
+
+function setPipe(elId, meta, ok=false){
+  const el = $(elId);
+  el.classList.toggle('good', ok);
+  $(elId+'meta').textContent = meta;
+}
+
+function run(){
+  const t0 = performance.now();
+  const chunkSize = +$('#chunkSize').value|0;
+  const overlap   = +$('#overlap').value|0;
+  const topk      = +$('#topk').value|0;
+  const useStop   = $('#stopwords').value==='en';
+
+  // 1) Chunk
+  const allChunks = [];
+  CORPUS.forEach(doc=>{
+    const chunks = chunkText(doc.text, chunkSize, overlap).map((c,i)=>({docId:doc.id, title:doc.title, idx:i, text:c}));
+    allChunks.push(...chunks);
+  });
+  const t1 = performance.now();
+
+  // 2) Vectorize (TF-IDF)
+  const chunkTokens = allChunks.map(c => tokenize(c.text, useStop));
+  const idfMap = idf(chunkTokens);
+  const chunkVecs = chunkTokens.map(toks => tfidfVec(tf(toks), idfMap));
+  const query = $('#query').value.trim();
+  const qTokens = tokenize(query, useStop);
+  const qVec = tfidfVec(tf(qTokens), idfMap);
+  const t2 = performance.now();
+
+  // 3) Retrieve
+  const scored = chunkVecs.map((v,i)=>({i, score: cosine(qVec, v)}))
+    .sort((a,b)=>b.score-a.score)
+    .slice(0, Math.min(topk, chunkVecs.length));
+  const t3 = performance.now();
+
+  // 4) Assemble
+  const context = scored.map(s => allChunks[s.i].text).join("\n\n");
+  const t4 = performance.now();
+
+  // Update pipeline UI
+  setPipe('#p1', `${allChunks.length} chunks @ ${chunkSize}/${overlap}`, true);
+  setPipe('#p2', `|V|=${idfMap.size} terms`, true);
+  setPipe('#p3', `top-k=${topk}`, true);
+  setPipe('#p4', `${context.length} chars`, true);
+  $('#t1').textContent = (t1 - t0).toFixed(1);
+  $('#t2').textContent = (t2 - t1).toFixed(1);
+  $('#t3').textContent = (t3 - t2).toFixed(1);
+  $('#t4').textContent = (t4 - t3).toFixed(1);
+
+  // Render results
+  const qTerms = Array.from(new Set(qTokens));
+  const container = $('#results');
+  container.innerHTML = '';
+  $('#retCount').textContent = String(scored.length);
+
+  scored.forEach(({i, score}, rank)=>{
+    const c = allChunks[i];
+    const wrap = document.createElement('div');
+    wrap.className = 'chunk';
+    const header = document.createElement('div');
+    header.innerHTML = `<strong>#${rank+1}</strong> <span class="muted">from</span> <code class="inline">${c.title}</code> <span class="score">score: ${score.toFixed(3)}</span>`;
+    const bar = document.createElement('div'); bar.className = 'bar'; bar.title = String(score.toFixed(4));
+    const fill = document.createElement('i'); fill.style.width = `${Math.max(0, Math.min(1, score))*100}%`;
+    bar.appendChild(fill);
+    const text = document.createElement('div');
+    text.className = 'small'; text.style.marginTop = '6px';
+    text.innerHTML = highlight(c.text, qTerms);
+    wrap.appendChild(header);
+    wrap.appendChild(bar);
+    wrap.appendChild(text);
+    container.appendChild(wrap);
+  });
+
+  $('#context').textContent = context || '(no results)';
+}
+</script>
+</body>
 </html>
